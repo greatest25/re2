@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>agent_0_actor_inference.json</file>
+        <file>agent_1_actor_inference.json</file>
+        <file>agent_2_actor_inference.json</file>
+    </qresource>
+</RCC>
