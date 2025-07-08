@@ -187,7 +187,9 @@ private:
 
     // UAV策略类，处理追踪逻辑
     Strategy1 *SO1;
+    Strategy2 *SO2;
     Strategy3 *SO3;
+    Strategy4 *SO4;
     int blueAliveCount; // 我方存活数量
 
     PathPlanner *m_pathPlanner; // 添加路径规划器
@@ -197,6 +199,9 @@ private:
     QVector<QPoint> findPath(const QPoint& start, const QPoint& goal, const QVector<QPoint>& obstacles, int mapWidth, int mapHeight);
     float heuristic(const QPoint& a, const QPoint& b);
     QVector<QPoint> reconstructPath(const QHash<QPoint, QPoint>& cameFrom, QPoint current);
+
+    // 新增：处理Strategy3的needReplanPath信号
+    void onStrategy3NeedReplanPath(const QString& droneId, const QPoint& targetPoint);
 };
 #endif // MAINWINDOW_H
 

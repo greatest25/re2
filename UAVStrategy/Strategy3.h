@@ -6,6 +6,7 @@
 #include <QMap>
 #include <QString>
 #include <QVector>
+#include <QTime>
 
 // 用于存储无人机状态的简化结构
 struct DroneState {
@@ -13,11 +14,19 @@ struct DroneState {
     int hp;
 };
 
+// 用于存储敌机记忆信息的结构
+struct EnemyMemory {
+    QPoint position;  // 敌机位置
+    QTime lastSeen;   // 上次看到敌机的时间
+    int hp;           // 敌机血量
+};
+
 class Strategy3 : public QObject
 {
     Q_OBJECT
 public:
-    explicit Strategy3(QObject* parent = nullptr);
+    explicit Strategy3(QObject *parent = nullptr);
+    virtual ~Strategy3();
 
     // 从主窗口更新战场上所有无人机的状态
     void updateGameState(const QMap<QString, DroneState>& friendlyDrones, const QMap<QString, DroneState>& enemyDrones);
@@ -27,6 +36,38 @@ public:
 
     // 重置策略状态，用于新一局游戏
     void reset();
+
+    // 辅助函数，尝试调整目标点位置，避免目标点位于障碍物区域
+    QPoint adjustTargetPoint(const QPoint& originalTarget, bool isGrid = true) const;
+
+    // 常量定义
+    static const int GRID_SIZE;  // 栅格大小
+    static const int MAP_WIDTH;  // 栅格地图宽度
+    static const int MAP_HEIGHT; // 栅格地图高度
+    static const int MAP_PIXEL_WIDTH = 1600;  // 地图像素宽度
+    static const int MAP_PIXEL_HEIGHT = 1200;  // 地图像素高度
+    
+    // 探测和交战范围（300像素 / 20像素每格 = 15格）
+    static const int ENGAGE_RANGE = 15;  // 探测范围，单位：栅格
+    static const int TARGET_CONFIRM_DISTANCE = 3;  // 目标确认距离
+    static const int TARGET_REACHED_THRESHOLD = 1; // 到达目标点的阈值
+    static const int MIN_TARGET_UPDATE_DISTANCE = 5; // 最小目标更新距离
+    static const int ATTACK_RANGE = 10;  // 攻击范围（栅格）
+    static const int SAFE_DISTANCE = 200;  // 安全距离（像素）
+    static const int RETREAT_HP_THRESHOLD = 30;  // 后撤血量阈值
+    static const int PATH_PLAN_INTERVAL = 500;  // 路径规划间隔（毫秒）
+    static const int PATH_UPDATE_THRESHOLD = 3;  // 路径更新阈值（栅格）
+    static const int MEMORY_DURATION = 5000;  // 敌机记忆持续时间（毫秒）
+
+    // 巡逻点
+    static const QVector<QPoint> PATROL_POINTS;
+    
+    // 阵型偏移量（相对于中心点的偏移，单位：像素）
+    static const QMap<QString, QPoint> FORMATION_OFFSETS;
+    
+signals:
+    // 添加重新规划路径的信号
+    void needReplanPath(const QString& droneId, const QPoint& targetPoint);
 
 private:
     // 寻找全局最优攻击目标（血量最低的敌人）
@@ -61,93 +102,70 @@ private:
 
     // 新增：获取阵型中心点
     QPoint getFormationCenter() const;
-
-    // 战场态势感知
-    QMap<QString, DroneState> m_friendlyDrones;
-    QMap<QString, DroneState> m_enemyDrones;
-
-    // 策略决策结果
-    QString m_currentTargetedEnemyId; // 当前集火的敌机ID
-    QString m_currentAttackerId;      // 当前负责攻击的我方无人机ID
-    QMap<QString, QPoint> m_droneTargets; // 我方每架无人机的目标点
     
-    // 新增：每架无人机的交战状态
-    QMap<QString, bool> m_droneEngagingStatus;
+    // 新增：检查是否可以进行路径重规划(避免频繁规划)
+    bool canReplanPath(const QString& droneId);
     
-    // 巡逻相关
-    int m_patrolIndex;                // 当前巡逻点索引
-    bool m_hasEnemyDetected;          // 是否探测到敌机
-
-    // "车轮战"策略的核心参数
-    static const int RETREAT_HP_THRESHOLD = 35; // 当攻击者血量低于此值时后撤
-    static const int SAFE_DISTANCE = 150;      // 支援者与目标的保持距离
+    // 新增：判断是否到达目标点
+    bool hasReachedTarget(const QString& droneId) const;
     
-    // 支援相关参数
-    static const int SUPPORT_DISTANCE = 80;    // 支援者与主攻击者的距离
-    static const int ENGAGE_RANGE = 250;       // 交战距离阈值，增加到250以提高发现敌机的灵敏度
+    // 新增：判断是否需要更新目标点
+    bool needUpdateTarget(const QString& droneId, const QPoint& newTarget) const;
     
-    // 目标判定参数（调整为更合理的值）
-    static const int TARGET_CONFIRM_DISTANCE = 200; // 敌机和队友的距离阈值，用于判断是否为追击目标
-    static const int TEAMMATE_SUPPORT_RANGE = 250;  // 前往支援队友的最大距离
-
-    // 新增：目标点更新相关参数
-    static const int TARGET_REACHED_THRESHOLD = 2;  // 到达目标点的距离阈值（格数）
-    static const int MIN_TARGET_UPDATE_DISTANCE = 2; // 最小目标点更新距离（格数），减小以提高目标更新灵敏度
-    static const int TARGET_UPDATE_COOLDOWN = 5;    // 目标点更新冷却时间（帧数），减小以提高更新频率
-
-    // 新增：阵型相关参数
-    static const int FORMATION_SPACING = 100;   // 阵型中无人机之间的基础间距
-    static const int FORMATION_OFFSET = 60;     // 阵型偏移量，用于错开位置
+    // 新增：更新无人机目标点
+    void updateDroneTarget(const QString& droneId, const QPoint& newTarget);
     
-    // 地图实际像素尺寸
-    static const int MAP_PIXEL_WIDTH = 1280;   // 地图像素宽度
-    static const int MAP_PIXEL_HEIGHT = 800;   // 地图像素高度
+    // 新增：获取最近的队友位置
+    QPoint getNearestTeammatePosition(const QString& excludeDroneId) const;
     
-    // 新增：阵型位置映射（用于确定每架无人机在阵型中的相对位置）
-    const QMap<QString, QPoint> FORMATION_OFFSETS = {
-        {"B1", QPoint(-FORMATION_OFFSET, -FORMATION_OFFSET)},   // 左上
-        {"B2", QPoint(FORMATION_OFFSET, -FORMATION_OFFSET)},    // 右上
-        {"B3", QPoint(0, FORMATION_OFFSET)}                     // 下中
-    };
-
-    // 栅格大小常量，与GridMap保持一致
-    static const int GRID_SIZE;
+    // 新增：更新巡逻目标点
+    void updatePatrolTargets();
     
-    // 地图尺寸常量
-    static const int MAP_WIDTH;  // 栅格地图宽度
-    static const int MAP_HEIGHT; // 栅格地图高度
-    
-    // 巡逻点
-    static const QVector<QPoint> PATROL_POINTS;
-
-    // 每架无人机的当前路径
-    QMap<QString, QVector<QPoint>> m_dronePaths;
-    
-    // 每架无人机的当前目标敌机
-    QMap<QString, QString> m_droneTargetEnemies;
-
-    // "车轮战"策略的核心参数
-    static const int PATH_UPDATE_THRESHOLD = 5; // 当敌机移动超过此格数时重新规划
-    static const int ATTACK_RANGE = 8;         // 攻击范围（格数）
-
     // 新增：判断敌机是否是队友的追击目标
     bool isEnemyTeammateTarget(const QPoint& enemyPos, const QPoint& teammatePos) const;
 
-    // 新增：获取最近的队友位置
-    QPoint getNearestTeammatePosition(const QString& excludeDroneId) const;
+private:
+    // 我方无人机状态 - 键是无人机ID，值是状态信息
+    QMap<QString, DroneState> m_friendlyDrones;
 
-    // 新增：判断是否到达目标点
-    bool hasReachedTarget(const QString& droneId) const;
+    // 敌方无人机状态 - 键是无人机ID，值是状态信息
+    QMap<QString, DroneState> m_enemyDrones;
+    
+    // 敌方无人机历史位置 - 用于位置预测
+    QMap<QString, QPoint> m_lastEnemyPositions;
 
-    // 新增：判断是否需要更新目标点
-    bool needUpdateTarget(const QString& droneId, const QPoint& newTarget) const;
+    // 敌方无人机记忆 - 用于存储敌机记忆信息
+    QMap<QString, EnemyMemory> m_lastKnownEnemyPositions;
 
-    // 新增：更新无人机目标点
-    void updateDroneTarget(const QString& droneId, const QPoint& newTarget);
+    // 当前目标敌机ID
+    QString m_currentTargetedEnemyId;
 
-    // 新增：目标点更新相关状态
-    QMap<QString, int> m_targetUpdateCooldown;  // 每架无人机的目标点更新冷却计时
-    QMap<QString, QPoint> m_lastTargets;        // 每架无人机的上一个目标点
+    // 当前攻击者ID
+    QString m_currentAttackerId;
+
+    // 无人机目标点 - 键是无人机ID，值是目标栅格坐标
+    QMap<QString, QPoint> m_droneTargets;
+
+    // 无人机目标敌机 - 键是无人机ID，值是目标敌机ID
+    QMap<QString, QString> m_droneTargetEnemies;
+
+    // 无人机交战状态 - 键是无人机ID，值是是否正在交战
+    QMap<QString, bool> m_droneEngagingStatus;
+
+    // 上次更新目标点的时间 - 键是无人机ID，值是上次更新时间
+    QMap<QString, QTime> m_lastTargetUpdateTime;
+
+    // 上次规划路径的时间 - 键是无人机ID，值是上次规划时间
+    QMap<QString, QTime> m_lastPathPlanTime;
+
+    // 上次目标点 - 键是无人机ID，值是上次目标点
+    QMap<QString, QPoint> m_lastTargets;
+
+    // 是否检测到敌机
+    bool m_hasEnemyDetected;
+
+    // 巡逻点索引
+    int m_patrolIndex;
 };
 
 #endif // STRATEGY3_H

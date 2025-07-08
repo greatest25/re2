@@ -7,6 +7,15 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
     this->setWindowTitle("自动策略飞行控制终端");
+    
+    // 初始化成员变量
+    gameStage = "waiting";
+    currentStrategy = 1;
+    isPathPlannerInitialized = false;
+    isMaddpgInitialized = false;
+    m_hasValidStartPoint = false;
+    m_hasValidTargetPoint = false;
+    
     // 设置标题字体大小
     QFont statusFont("Microsoft YaHei", 14, QFont::Bold);
     QFont strategyFont("Microsoft YaHei", 14, QFont::Bold);
@@ -215,6 +224,13 @@ MainWindow::MainWindow(QWidget *parent)
     strategyManager = new UAVStrategyManager(this);
 
     setCompetitionMode(gridMap->showMapInCompetitionMode);         //是否显示地图
+
+    // 创建策略对象
+    SO2 = nullptr;
+    SO4 = nullptr;
+
+    // 连接Strategy3的信号
+    connect(SO3, &Strategy3::needReplanPath, this, &MainWindow::onStrategy3NeedReplanPath);
 }
 
 MainWindow::~MainWindow()
@@ -296,17 +312,36 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
     if (gameStateChanged && gameStage == "running" && oldGameStage != "running") {
         SO3->reset();
         targetManager->initPresetTargets();
-        if(currentStrategy == 3){
-             QStringList blueUAVs = {"B1", "B2", "B3"};
-             for (const QString& droneId : blueUAVs) {
-                 planPathForSingleDrone_S3(droneId);
-             }
-        } else {
-            // S1等其他策略开始时先巡逻
-            QTimer::singleShot(10, this, [this]() {
+        
+        // 给策略3一些时间初始化
+        QTimer::singleShot(100, this, [this]() {
+            if (currentStrategy == 3) {
+                // 更新战场态势
+                QMap<QString, DroneState> friendlyStates;
+                QMap<QString, DroneState> enemyStates;
+                for (const auto& drone : dronesInfo.keys()) {
+                    if (drone.startsWith("B")) {
+                        friendlyStates[drone] = {QPoint(dronesInfo[drone].x, dronesInfo[drone].y), dronesInfo[drone].hp};
+                    } else if (drone.startsWith("R")) {
+                        enemyStates[drone] = {QPoint(dronesInfo[drone].x, dronesInfo[drone].y), dronesInfo[drone].hp};
+                    }
+                }
+                
+                // 先更新战场态势，让策略3知道敌机位置
+                SO3->updateGameState(friendlyStates, enemyStates);
+                
+                // 然后为每个无人机规划路径
+                QStringList blueUAVs = {"B1", "B2", "B3"};
+                for (const QString& droneId : blueUAVs) {
+                    if (dronesInfo.contains(droneId) && dronesInfo[droneId].hp > 0) {
+                        planPathForSingleDrone_S3(droneId);
+                    }
+                }
+            } else {
+                // S1等其他策略开始时先巡逻
                 planPathToPresetTargets();
-            });
-        }
+            }
+        });
     }
 
     // 检查游戏状态是否变为finish
@@ -436,8 +471,11 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                 if (isPathInObstacle(uid)) {
                     // 检查是否已经过了规划间隔时间
                     QTime currentTime = QTime::currentTime();
+                    // 策略3使用更长的重规划间隔，减少因障碍物导致的频繁重规划
+                    int pathPlanInterval = currentStrategy == 3 ? PATH_PLAN_INTERVAL * 2 : PATH_PLAN_INTERVAL;
+                    
                     if (!m_lastPathPlanTime.contains(uid) ||
-                        m_lastPathPlanTime[uid].msecsTo(currentTime) >= PATH_PLAN_INTERVAL) {
+                        m_lastPathPlanTime[uid].msecsTo(currentTime) >= pathPlanInterval) {
 
                         // 更新上次规划时间
                         m_lastPathPlanTime[uid] = currentTime;
@@ -451,6 +489,8 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                         planPathForSingleDrone_S3(uid);
                         qDebug() << "策略3：路径在障碍物中，无人机 "<<uid<<" 需要重规划路径";
                         }
+                    } else {
+                        qDebug() << "无人机 " << uid << " 路径经过障碍物，但未达到重规划间隔时间，跳过本次重规划";
                     }
                     // 不使用break，继续检查其他无人机
                 }
@@ -1055,22 +1095,34 @@ bool MainWindow::isPathInObstacle(const QString &droneId) {
 
     // 找到距离当前位置最近的路径点索引
     int currentIndex = gridMap->findClosestPathPointIndex(currentPos, droneId);
-
+    
+    // 查找未来路径点中是否有会与障碍物相交的点
+    // 只检查当前位置之后的路径点（未飞行的路径），提前预测一部分点
+    int predictionHorizon = 10; // 预测10个点
+    int endIndex = qMin(currentIndex + predictionHorizon, path.size());
+    
     // 遍历所有障碍物
     for (auto it = staclePositions.begin(); it != staclePositions.end(); ++it) {
         const stacleInfo &obstacle = it.value();
+        QString obstacleId = it.key();
+        
+        // 只检查移动障碍物(雷云)，静态障碍物应该已经在路径规划时避开
+        if (!obstacleId.startsWith("C")) { // 雷云ID格式为C1, C2等
+            continue;
+        }
 
-        // 只检查当前位置之后的路径点（未飞行的路径）
-        for (int i = currentIndex; i < path.size(); i++) {
+        // 检查未来路径点是否会与移动障碍物相交
+        for (int i = currentIndex; i < endIndex; i++) {
             const QPointF &point = path[i];
             // 使用GridMap的isPointInCircle方法检查点是否在障碍物范围内
             if (gridMap->isPointInCircle(point.x(), point.y(), obstacle.x, obstacle.y, obstacle.radius)) {
-                return true; // 未飞行的路径与障碍物相交
+                qDebug() << "检测到无人机" << droneId << "在第" << i - currentIndex << "步后可能与移动障碍物" << obstacleId << "相交";
+                return true; // 未来路径与移动障碍物相交
             }
         }
     }
 
-    return false; // 未飞行的路径不与任何障碍物相交
+    return false; // 未来路径不会与任何移动障碍物相交
 }
 
 
@@ -1199,9 +1251,21 @@ void MainWindow::planPathForSingleDrone_S3(const QString &droneId) {
         SO3->updateGameState(friendlyStates, enemyStates);
     }
 
-
     // 更新共享地图
     emit UpdateSharedGridMap(gridMap->getSharedGridMap());
+
+    // 检查是否需要限制路径规划频率
+    QTime currentTime = QTime::currentTime();
+    if (m_lastS3PathPlanTime.contains(droneId)) {
+        int elapsed = m_lastS3PathPlanTime[droneId].msecsTo(currentTime);
+        if (elapsed < PATH_PLAN_INTERVAL) {
+            qDebug() << "[Strategy3] 无人机" << droneId << "路径规划过于频繁，跳过本次规划，间隔:" << elapsed << "ms";
+            return;
+        }
+    }
+    
+    // 更新路径规划时间
+    m_lastS3PathPlanTime[droneId] = currentTime;
 
     // 使用QtConcurrent::run在单独的线程中处理该无人机的路径规划请求
     QtConcurrent::run([=]() {
@@ -1209,22 +1273,33 @@ void MainWindow::planPathForSingleDrone_S3(const QString &droneId) {
         int gridRow = dronesInfo[droneId].y / gridMap->GRID_SIZE;
         QPoint startPoint(gridCol, gridRow);
 
-        // 从策略3获取目标点 - 现在直接返回栅格坐标
-        QPoint targetPoint = SO3->getTargetForDrone(droneId);
+        // 从策略3获取目标点 - 直接返回栅格坐标
+        QPoint gridTargetPoint = SO3->getTargetForDrone(droneId);
 
-        if (targetPoint == QPoint(0,0)) {
+        if (gridTargetPoint == QPoint(0,0)) {
             // 如果策略没有给出有效目标（可能因为没有敌人了），则让其原地待命或巡逻
-            targetPoint = targetManager->getPatrolPoint(droneId);
-            qDebug() << "[Strategy3] " << droneId << " no valid target from strategy, fallback to patrol.";
+            gridTargetPoint = targetManager->getPatrolPoint(droneId);
+            qDebug() << "[Strategy3] " << droneId << " 没有有效目标，回退到巡逻模式:" << gridTargetPoint;
         } else {
-            qDebug() << "[Strategy3] " << droneId << " planning path to GRID target: " << targetPoint;
+            qDebug() << "[Strategy3] " << droneId << " 规划路径到栅格目标:" << gridTargetPoint;
         }
+        
+        // 确保目标点在地图范围内
+        gridTargetPoint.setX(qBound(0, gridTargetPoint.x(), gridMap->GRID_COLS - 1));
+        gridTargetPoint.setY(qBound(0, gridTargetPoint.y(), gridMap->GRID_ROWS - 1));
+        
+        // 使用SO3的adjustTargetPoint方法确保目标点不在障碍物区域内
+        gridTargetPoint = SO3->adjustTargetPoint(gridTargetPoint, true);
+        
+        qDebug() << "[Strategy3] " << droneId << " 经调整后的栅格目标点:" << gridTargetPoint;
 
         // 在主线程中执行UI相关操作和发送信号
         QMetaObject::invokeMethod(this, [=]() {
+            // 清除旧路径但保留目标点
             gridMap->clearPath(droneId);
-            // 发送路径规划请求
-            emit StartfindPath(startPoint, targetPoint, droneId);
+
+            // 发送路径规划请求 - 栅格坐标
+            emit StartfindPath(startPoint, gridTargetPoint, droneId);
         }, Qt::QueuedConnection);
     });
 }
@@ -1615,3 +1690,55 @@ void MainWindow::calculateCloudVelocities() {
 //    float dy = nearestEnemy.y() - selfPos.y();
 //    targetAngle = qAtan2(dy, dx);
 //}
+
+// 处理Strategy3的needReplanPath信号
+void MainWindow::onStrategy3NeedReplanPath(const QString& droneId, const QPoint& targetPoint)
+{
+    // 检查游戏是否正在运行
+    if (gameStage != "running") {
+        qDebug() << "游戏未运行，无法为 " << droneId << " 规划路径";
+        return;
+    }
+
+    // 检查该无人机是否存在且血量大于0
+    if (!dronesInfo.contains(droneId) || dronesInfo[droneId].hp <= 0) {
+        return;
+    }
+
+    // 检查是否需要限制路径规划频率
+    QTime currentTime = QTime::currentTime();
+    if (m_lastS3PathPlanTime.contains(droneId)) {
+        int elapsed = m_lastS3PathPlanTime[droneId].msecsTo(currentTime);
+        if (elapsed < PATH_PLAN_INTERVAL) {
+            qDebug() << "[Strategy3] 无人机" << droneId << "路径规划过于频繁，跳过本次规划，间隔:" << elapsed << "ms";
+            return;
+        }
+    }
+    
+    // 更新路径规划时间
+    m_lastS3PathPlanTime[droneId] = currentTime;
+
+    // 获取无人机当前位置的栅格坐标
+    int gridCol = dronesInfo[droneId].x / gridMap->GRID_SIZE;
+    int gridRow = dronesInfo[droneId].y / gridMap->GRID_SIZE;
+    QPoint startPoint(gridCol, gridRow);
+
+    // 将目标点从像素坐标转换为栅格坐标
+    QPoint gridTargetPoint(targetPoint.x() / gridMap->GRID_SIZE, targetPoint.y() / gridMap->GRID_SIZE);
+    
+    // 确保栅格坐标在有效范围内
+    gridTargetPoint.setX(qBound(0, gridTargetPoint.x(), gridMap->GRID_COLS - 1));
+    gridTargetPoint.setY(qBound(0, gridTargetPoint.y(), gridMap->GRID_ROWS - 1));
+    
+    // 使用SO3的adjustTargetPoint方法确保目标点不在障碍物区域
+    gridTargetPoint = SO3->adjustTargetPoint(gridTargetPoint, true);
+
+    // 在主线程中执行UI相关操作和发送信号
+    QMetaObject::invokeMethod(this, [=]() {
+        gridMap->clearPath(droneId);
+        // 发送路径规划请求 - 栅格坐标
+        qDebug() << "[Strategy3] 收到needReplanPath信号，为无人机" << droneId 
+                << "规划路径，从" << startPoint << "到" << gridTargetPoint;
+        emit StartfindPath(startPoint, gridTargetPoint, droneId);
+    }, Qt::QueuedConnection);
+}
