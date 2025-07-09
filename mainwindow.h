@@ -160,9 +160,6 @@ private:
     bool isPathInObstacle(const QString &droneId);
 
     QMap<QString, QTime> m_lastPathPlanTime; // 记录每个无人机上次路径规划的时间
-    // 策略3专用：记录无人机上次规划路径的时间
-    QMap<QString, QTime> m_lastS3PathPlanTime;
-    const int PATH_PLAN_INTERVAL = 150; // 路径规划最小间隔时间(毫秒)
 
     // 为单个无人机规划路径
     void planPathForSingleDrone_S1(const QString &droneId);   //SO1

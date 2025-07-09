@@ -42,28 +42,20 @@ public:
 
     // 常量定义
     static const int GRID_SIZE;  // 栅格大小
-    static const int MAP_WIDTH;  // 栅格地图宽度
-    static const int MAP_HEIGHT; // 栅格地图高度
-    static const int MAP_PIXEL_WIDTH = 1600;  // 地图像素宽度
-    static const int MAP_PIXEL_HEIGHT = 1200;  // 地图像素高度
-    
-    // 探测和交战范围（300像素 / 20像素每格 = 15格）
-    static const int ENGAGE_RANGE = 15;  // 探测范围，单位：栅格
-    static const int TARGET_CONFIRM_DISTANCE = 3;  // 目标确认距离
-    static const int TARGET_REACHED_THRESHOLD = 1; // 到达目标点的阈值
-    static const int MIN_TARGET_UPDATE_DISTANCE = 5; // 最小目标更新距离
-    static const int ATTACK_RANGE = 10;  // 攻击范围（栅格）
-    static const int SAFE_DISTANCE = 200;  // 安全距离（像素）
-    static const int RETREAT_HP_THRESHOLD = 30;  // 后撤血量阈值
-    static const int PATH_PLAN_INTERVAL = 500;  // 路径规划间隔（毫秒）
-    static const int PATH_UPDATE_THRESHOLD = 3;  // 路径更新阈值（栅格）
+    static const int MAP_WIDTH;  // 地图宽度（栅格）
+    static const int MAP_HEIGHT; // 地图高度（栅格）
+    static const int MAP_PIXEL_WIDTH = 1280;   // 地图像素宽度
+    static const int MAP_PIXEL_HEIGHT = 800;   // 地图像素高度
     static const int MEMORY_DURATION = 5000;  // 敌机记忆持续时间（毫秒）
-
-    // 巡逻点
-    static const QVector<QPoint> PATROL_POINTS;
+    static const int TARGET_CONFIRM_DISTANCE = 5;  // 目标确认距离（栅格）
+    static const int TARGET_REACHED_THRESHOLD = 2; // 到达目标点阈值（栅格）
+    static const int MIN_TARGET_UPDATE_DISTANCE = 3; // 最小目标更新距离（栅格）
+    static const int PATH_UPDATE_THRESHOLD = 2;  // 路径更新阈值（栅格）
+    static const int ATTACK_RANGE = 5;  // 攻击范围（栅格）
     
-    // 阵型偏移量（相对于中心点的偏移，单位：像素）
-    static const QMap<QString, QPoint> FORMATION_OFFSETS;
+    // 巡逻点和阵型偏移定义
+    static const QVector<QPoint> PATROL_POINTS;  // 巡逻点列表
+    static const QMap<QString, QPoint> FORMATION_OFFSETS;  // 阵型偏移
     
 signals:
     // 添加重新规划路径的信号
@@ -102,9 +94,6 @@ private:
 
     // 新增：获取阵型中心点
     QPoint getFormationCenter() const;
-    
-    // 新增：检查是否可以进行路径重规划(避免频繁规划)
-    bool canReplanPath(const QString& droneId);
     
     // 新增：判断是否到达目标点
     bool hasReachedTarget(const QString& droneId) const;

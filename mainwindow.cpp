@@ -472,7 +472,7 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                     // 检查是否已经过了规划间隔时间
                     QTime currentTime = QTime::currentTime();
                     // 策略3使用更长的重规划间隔，减少因障碍物导致的频繁重规划
-                    int pathPlanInterval = currentStrategy == 3 ? PATH_PLAN_INTERVAL * 2 : PATH_PLAN_INTERVAL;
+                    int pathPlanInterval = currentStrategy == 3 ? 300 : 150;  // 策略3使用300ms，其他使用150ms
                     
                     if (!m_lastPathPlanTime.contains(uid) ||
                         m_lastPathPlanTime[uid].msecsTo(currentTime) >= pathPlanInterval) {
@@ -507,21 +507,6 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
 
     // 根据当前策略执行相应算法    
     if (gameStage == "running") {
-        if (currentStrategy == 3 && isPathPlannerInitialized) {
-            // 策略3：车轮战 - 需要持续重规划
-            for (auto it = dronesInfo.begin(); it != dronesInfo.end(); ++it) {
-                const QString &uid = it.key();
-                if (!uid.startsWith("B") || it->hp <= 0) continue;
-
-                // 使用计时器周期性地为S3的无人机规划路径
-                QTime currentTime = QTime::currentTime();
-                if (!m_lastS3PathPlanTime.contains(uid) || m_lastS3PathPlanTime[uid].msecsTo(currentTime) >= 200) { // 200ms规划一次
-                    m_lastS3PathPlanTime[uid] = currentTime;
-                    planPathForSingleDrone_S3(uid);
-                }
-            }
-        }
-
         // 策略1和策略3的共同移动逻辑
         if ((currentStrategy == 1 || currentStrategy == 3) && isPathPlannerInitialized) {
             for (auto it = dronesInfo.begin(); it != dronesInfo.end(); ++it) {
@@ -1254,19 +1239,6 @@ void MainWindow::planPathForSingleDrone_S3(const QString &droneId) {
     // 更新共享地图
     emit UpdateSharedGridMap(gridMap->getSharedGridMap());
 
-    // 检查是否需要限制路径规划频率
-    QTime currentTime = QTime::currentTime();
-    if (m_lastS3PathPlanTime.contains(droneId)) {
-        int elapsed = m_lastS3PathPlanTime[droneId].msecsTo(currentTime);
-        if (elapsed < PATH_PLAN_INTERVAL) {
-            qDebug() << "[Strategy3] 无人机" << droneId << "路径规划过于频繁，跳过本次规划，间隔:" << elapsed << "ms";
-            return;
-        }
-    }
-    
-    // 更新路径规划时间
-    m_lastS3PathPlanTime[droneId] = currentTime;
-
     // 使用QtConcurrent::run在单独的线程中处理该无人机的路径规划请求
     QtConcurrent::run([=]() {
         int gridCol = dronesInfo[droneId].x / gridMap->GRID_SIZE;
@@ -1705,18 +1677,7 @@ void MainWindow::onStrategy3NeedReplanPath(const QString& droneId, const QPoint&
         return;
     }
 
-    // 检查是否需要限制路径规划频率
-    QTime currentTime = QTime::currentTime();
-    if (m_lastS3PathPlanTime.contains(droneId)) {
-        int elapsed = m_lastS3PathPlanTime[droneId].msecsTo(currentTime);
-        if (elapsed < PATH_PLAN_INTERVAL) {
-            qDebug() << "[Strategy3] 无人机" << droneId << "路径规划过于频繁，跳过本次规划，间隔:" << elapsed << "ms";
-            return;
-        }
-    }
-    
-    // 更新路径规划时间
-    m_lastS3PathPlanTime[droneId] = currentTime;
+
 
     // 获取无人机当前位置的栅格坐标
     int gridCol = dronesInfo[droneId].x / gridMap->GRID_SIZE;
