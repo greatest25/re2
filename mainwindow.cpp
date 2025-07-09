@@ -1091,12 +1091,7 @@ bool MainWindow::isPathInObstacle(const QString &droneId) {
         const stacleInfo &obstacle = it.value();
         QString obstacleId = it.key();
         
-        // 只检查移动障碍物(雷云)，静态障碍物应该已经在路径规划时避开
-        if (!obstacleId.startsWith("C")) { // 雷云ID格式为C1, C2等
-            continue;
-        }
-
-        // 检查未来路径点是否会与移动障碍物相交
+        // 检查未来路径点是否会与障碍物相交（包括静态和动态障碍物）
         for (int i = currentIndex; i < endIndex; i++) {
             const QPointF &point = path[i];
             // 使用GridMap的isPointInCircle方法检查点是否在障碍物范围内
