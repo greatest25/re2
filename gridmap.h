@@ -99,6 +99,8 @@ public:
     QPointF calculateVelocity(const QString &droneId, const QPointF &currentPos);
 
     bool isPointInCircle(int px, int py, int cx, int cy, int radius);
+    // 添加线段与圆相交检测方法
+    bool isLineIntersectCircle(double x1, double y1, double x2, double y2, double cx, double cy, double radius);
     // 辅助方法：找到最近的路径点索引
     int findClosestPathPointIndex(const QPointF &currentPos, const QString &droneId);
 signals:

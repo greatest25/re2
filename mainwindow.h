@@ -198,7 +198,10 @@ private:
     QVector<QPoint> reconstructPath(const QHash<QPoint, QPoint>& cameFrom, QPoint current);
 
     // 新增：处理Strategy3的needReplanPath信号
-    void onStrategy3NeedReplanPath(const QString& droneId, const QPoint& targetPoint);
+    void onStrategy3NeedReplanPath(QString droneId, QPoint current, QPoint target);
+    void handleEnemyMemoryTimeout();
+    bool isPathInObstacle(const QString &droneId, const QList<QPoint> &path);
+    void planPathForSingleDrone_S3(const QString& droneId, const QPoint& currentPoint, const QPoint& targetPoint);
 };
 #endif // MAINWINDOW_H
 

@@ -179,19 +179,19 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
 
-    connect(ui->SO3, &QPushButton::clicked, this, [this]() {
+    connect(ui->SO3, &QPushButton::clicked, this, [this]() { // ！策略3按钮绑定
         if (gameStage != "running") {
-            currentStrategy = 3;
+            currentStrategy = 3; // ！切换到策略3
             ui->SO1->setStyleSheet("");
             ui->SO2->setStyleSheet("");
             ui->SO3->setStyleSheet("background-color: #8FBC8F;");
             ui->SO4->setStyleSheet("");
-            qDebug() << "已选择策略3 (车轮战)";
+            qDebug() << "已选择策略3 (蛇形阵列策略)";
 
             // 清理其他算法资源
             cleanupPathPlanner();
             cleanupMADDPG();
-            initializePathPlanner(); // <-- 关键修复：重新初始化路径规划器
+            initializePathPlanner(); // ！重新初始化路径规划器，用于蛇形阵列
         }
     });
 
@@ -218,7 +218,7 @@ MainWindow::MainWindow(QWidget *parent)
     // 初始化SO1和TargetManager
     SO1 = new Strategy1(this);
     targetManager = new TargetManager(this);
-    SO3 = new Strategy3(this);
+    SO3 = new Strategy3(this);  // ！初始化Strategy3对象，用于蛇形阵列策略
 
     // 初始化策略管理器
     strategyManager = new UAVStrategyManager(this);
@@ -230,7 +230,7 @@ MainWindow::MainWindow(QWidget *parent)
     SO4 = nullptr;
 
     // 连接Strategy3的信号
-    connect(SO3, &Strategy3::needReplanPath, this, &MainWindow::onStrategy3NeedReplanPath);
+    connect(SO3, &Strategy3::needReplanPath, this, &MainWindow::onStrategy3NeedReplanPath);  // ！连接Strategy3的重规划路径信号
 }
 
 MainWindow::~MainWindow()
@@ -307,15 +307,65 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
 
     // 计算雷云速度
     calculateCloudVelocities();
+    
+    // 策略3蛇头变更检测
+    static QString lastSnakeHead = "";
+    if (currentStrategy == 3 && gameStage == "running") { // ！策略3主流程入口
+        // 确定当前的蛇头
+        QString newSnakeHead = "";
+        if (dronesInfo.contains("B1") && dronesInfo["B1"].hp > 0) {
+            newSnakeHead = "B1";  // B1优先作为蛇头
+        } else if (dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0) {
+            newSnakeHead = "B2";  // B1坠毁时B2成为蛇头
+        } else if (dronesInfo.contains("B3") && dronesInfo["B3"].hp > 0) {
+            newSnakeHead = "B3";  // B1和B2坠毁时B3成为蛇头
+        }
+        
+        // 检测蛇头是否变化（例如之前的蛇头坠毁）
+        if (!lastSnakeHead.isEmpty() && lastSnakeHead != newSnakeHead) {
+            qDebug() << "[Strategy3] 检测到蛇头变更：" << lastSnakeHead << " -> " << newSnakeHead;
+            
+            // 如果新蛇头存在，为其重新规划路径
+            if (!newSnakeHead.isEmpty() && SO3) { // ！调用SO3相关逻辑
+                // 获取当前巡逻点或目标点
+                QPoint targetPoint;
+                if (!SO3->PATROL_POINTS.isEmpty()) {
+                    // 使用策略3的第一个巡逻点作为初始目标
+                    targetPoint = SO3->PATROL_POINTS[0];
+                    // 转换为像素坐标
+                    targetPoint = QPoint(
+                        targetPoint.x() * gridMap->GRID_SIZE + gridMap->GRID_SIZE/2,
+                        targetPoint.y() * gridMap->GRID_SIZE + gridMap->GRID_SIZE/2
+                    );
+                    qDebug() << "[Strategy3] 新蛇头" << newSnakeHead << "规划路径到巡逻点:" << targetPoint;
+                    
+                    // 规划路径
+                    QPoint currentPos;
+                    if (dronesInfo.contains(newSnakeHead)) {
+                        int gridCol = dronesInfo[newSnakeHead].x / gridMap->GRID_SIZE;
+                        int gridRow = dronesInfo[newSnakeHead].y / gridMap->GRID_SIZE;
+                        currentPos = QPoint(gridCol, gridRow);
+                    }
+                    planPathForSingleDrone_S3(newSnakeHead, currentPos, targetPoint); // ！调用策略3路径规划
+                }
+            }
+        }
+        
+        // 更新上一个蛇头记录
+        lastSnakeHead = newSnakeHead;
+    } else if (currentStrategy != 3 || gameStage != "running") {
+        // 如果不是策略3或不在运行状态，重置蛇头记录
+        lastSnakeHead = "";
+    }
 
     // 检查游戏状态是否变为running
     if (gameStateChanged && gameStage == "running" && oldGameStage != "running") {
-        SO3->reset();
+        SO3->reset(); // ！策略3重置
         targetManager->initPresetTargets();
         
         // 给策略3一些时间初始化
         QTimer::singleShot(100, this, [this]() {
-            if (currentStrategy == 3) {
+            if (currentStrategy == 3) { // ！策略3初始化流程
                 // 更新战场态势
                 QMap<QString, DroneState> friendlyStates;
                 QMap<QString, DroneState> enemyStates;
@@ -328,14 +378,22 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                 }
                 
                 // 先更新战场态势，让策略3知道敌机位置
-                SO3->updateGameState(friendlyStates, enemyStates);
+                SO3->updateGameState(friendlyStates, enemyStates); // ！更新策略3战场态势
                 
-                // 然后为每个无人机规划路径
-                QStringList blueUAVs = {"B1", "B2", "B3"};
-                for (const QString& droneId : blueUAVs) {
-                    if (dronesInfo.contains(droneId) && dronesInfo[droneId].hp > 0) {
-                        planPathForSingleDrone_S3(droneId);
-                    }
+                // 在蛇形模式下，只为当前蛇头规划路径，其他无人机直接跟随
+                // 确定当前的蛇头
+                QString snakeHead = "";
+                if (dronesInfo.contains("B1") && dronesInfo["B1"].hp > 0) {
+                    snakeHead = "B1";  // B1优先作为蛇头
+                } else if (dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0) {
+                    snakeHead = "B2";  // B1坠毁时B2成为蛇头
+                } else if (dronesInfo.contains("B3") && dronesInfo["B3"].hp > 0) {
+                    snakeHead = "B3";  // B1和B2坠毁时B3成为蛇头
+                }
+                
+                if (!snakeHead.isEmpty()) {
+                    planPathForSingleDrone_S3(snakeHead); // ！只为蛇头规划路径
+                    qDebug() << "[Strategy3] 游戏开始，只为蛇头" << snakeHead << "规划路径，B2和B3将直接跟随";
                 }
             } else {
                 // S1等其他策略开始时先巡逻
@@ -454,7 +512,7 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
     }
 
     // 遍历蓝方无人机，检查路径是否在障碍物范围内S01 SO3使用重新规划
-    if(currentStrategy == 1 || currentStrategy == 3){
+    if(currentStrategy == 1 || currentStrategy == 3){ // ！策略1和策略3共用部分
         for (auto it = dronesInfo.begin(); it != dronesInfo.end(); ++it) {
             const QString &uid = it.key();
 
@@ -463,16 +521,34 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                 continue;
             }
 
+            // 策略3只为当前蛇头检查路径，策略1为所有无人机检查
+            if (currentStrategy == 3) { // ！只为蛇头检查路径
+                // 确定当前的蛇头
+                QString snakeHead = "";
+                if (dronesInfo.contains("B1") && dronesInfo["B1"].hp > 0) {
+                    snakeHead = "B1";  // B1优先作为蛇头
+                } else if (dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0) {
+                    snakeHead = "B2";  // B1坠毁时B2成为蛇头
+                } else if (dronesInfo.contains("B3") && dronesInfo["B3"].hp > 0) {
+                    snakeHead = "B3";  // B1和B2坠毁时B3成为蛇头
+                }
+                
+                // 只为蛇头检查路径
+                if (uid != snakeHead) {
+                    continue;
+                }
+            }
+
             // 如果有平滑路径且不为空
             if (gridMap->m_pathMap.contains(uid) && !gridMap->m_pathMap[uid].isEmpty() &&
                 gridMap->m_smoothedPathMap.contains(uid) && gridMap->m_smoothedPathMap[uid].size() > 1) {
 
                 // 检查该无人机的路径是否在障碍物范围内
-                if (isPathInObstacle(uid)) {
+                if (isPathInObstacle(uid)) { // ！障碍物检测
                     // 检查是否已经过了规划间隔时间
                     QTime currentTime = QTime::currentTime();
                     // 策略3使用更长的重规划间隔，减少因障碍物导致的频繁重规划
-                    int pathPlanInterval = currentStrategy == 3 ? 300 : 150;  // 策略3使用300ms，其他使用150ms
+                    int pathPlanInterval = currentStrategy == 3 ? 300 : 150;  // ！策略3重规划间隔
                     
                     if (!m_lastPathPlanTime.contains(uid) ||
                         m_lastPathPlanTime[uid].msecsTo(currentTime) >= pathPlanInterval) {
@@ -480,14 +556,17 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                         // 更新上次规划时间
                         m_lastPathPlanTime[uid] = currentTime;
 
-                        // 只为这个无人机重规划
+                        // 根据策略决定重规划
                         if(currentStrategy == 1)
                         {
-                        planPathForSingleDrone_S1(uid);
-                        qDebug() << "策略1：路径在障碍物中，无人机 "<<uid<<" 需要重规划路径";
-                        }else if (currentStrategy == 3){
-                        planPathForSingleDrone_S3(uid);
-                        qDebug() << "策略3：路径在障碍物中，无人机 "<<uid<<" 需要重规划路径";
+                            planPathForSingleDrone_S1(uid);
+                            qDebug() << "策略1：路径在障碍物中，无人机 "<<uid<<" 需要重规划路径";
+                        } else if (currentStrategy == 3) {
+                            // 在策略3中，只为B1重规划路径
+                            if (uid == "B1") {
+                                planPathForSingleDrone_S3(uid); // ！策略3障碍物重规划
+                                qDebug() << "策略3：路径在障碍物中，蛇头 "<<uid<<" 需要重规划路径";
+                            }
                         }
                     } else {
                         qDebug() << "无人机 " << uid << " 路径经过障碍物，但未达到重规划间隔时间，跳过本次重规划";
@@ -508,7 +587,24 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
     // 根据当前策略执行相应算法    
     if (gameStage == "running") {
         // 策略1和策略3的共同移动逻辑
-        if ((currentStrategy == 1 || currentStrategy == 3) && isPathPlannerInitialized) {
+        if ((currentStrategy == 1 || currentStrategy == 3) && isPathPlannerInitialized) { // ！策略3移动主循环
+            // 策略3蛇形阵列的蛇头确定
+            QString snakeHead = "";
+            if (currentStrategy == 3) {
+                // 确定当前的蛇头：B1优先，如果B1坠毁则B2成为蛇头，如果B2也坠毁则B3成为蛇头
+                if (dronesInfo.contains("B1") && dronesInfo["B1"].hp > 0) {
+                    snakeHead = "B1";  // B1优先作为蛇头
+                } else if (dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0) {
+                    snakeHead = "B2";  // B1坠毁时B2成为蛇头
+                } else if (dronesInfo.contains("B3") && dronesInfo["B3"].hp > 0) {
+                    snakeHead = "B3";  // B1和B2坠毁时B3成为蛇头
+                }
+                
+                if (!snakeHead.isEmpty()) {
+                    qDebug() << "[Strategy3] 当前蛇头为:" << snakeHead;
+                }
+            }
+
             for (auto it = dronesInfo.begin(); it != dronesInfo.end(); ++it) {
                 const QString &uid = it.key();
 
@@ -517,22 +613,124 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                     continue;
                 }
 
-                // 恢复S1的原始判断逻辑，S3也使用此逻辑
-                if (gridMap->m_smoothedPathMap.contains(uid) && gridMap->m_smoothedPathMap[uid].size() > 1) {
-                    // 获取无人机当前位置
-                    QPointF currentPos(it.value().x, it.value().y);
+                // 策略3中，蛇头使用路径规划，其他无人机直接跟随
+                if (currentStrategy == 3) {
+                    // 如果是当前的蛇头，使用正常的路径规划逻辑
+                    if (uid == snakeHead) {
+                        if (gridMap->m_smoothedPathMap.contains(uid) && gridMap->m_smoothedPathMap[uid].size() > 1) {
+                            // 获取无人机当前位置
+                            QPointF currentPos(it.value().x, it.value().y);
+                            
+                            // 使用GridMap计算速度
+                            QPointF velocity = gridMap->calculateVelocity(uid, currentPos);
 
-                    // 使用GridMap计算速度
-                    QPointF velocity = gridMap->calculateVelocity(uid, currentPos);
+                            // 遵从指示，添加Debug打印
+                            qDebug() << "[VelocityCalc]" << uid << "Calculated Velocity:" << velocity;
 
-                    // 遵从指示，添加Debug打印
-                    qDebug() << "[VelocityCalc]" << uid << "Calculated Velocity:" << velocity;
-
-                    // 发送计算出的速度指令
-                    sendControlCommand(uid, velocity);
-                } else {     //路径无效或太短时飞机暂停
-                    QPointF velocity(0,0);
-                    sendControlCommand(uid, velocity);
+                            // 发送计算出的速度指令
+                            sendControlCommand(uid, velocity);
+                        } else {     //路径无效或太短时飞机暂停
+                            QPointF velocity(0,0);
+                            sendControlCommand(uid, velocity);
+                        }
+                    } else if (uid == "B2" && dronesInfo.contains(snakeHead) && snakeHead != "B2") {
+                        // B2跟随蛇头的路径点
+                        if (gridMap->m_smoothedPathMap.contains(snakeHead) && gridMap->m_smoothedPathMap[snakeHead].size() > 1) {
+                            QPointF currentPos(it.value().x, it.value().y);
+                            
+                            // 找到蛇头当前在路径上的位置索引
+                            int headIndex = gridMap->findClosestPathPointIndex(
+                                QPointF(dronesInfo[snakeHead].x, dronesInfo[snakeHead].y), 
+                                snakeHead);
+                            
+                            // B2跟随蛇头路径，但落后10个路径点
+                            int b2TargetIndex = qMax(0, headIndex - 10);
+                            
+                            // 获取目标点
+                            QPointF targetPoint = gridMap->m_smoothedPathMap[snakeHead][b2TargetIndex];
+                            
+                            // 计算方向向量
+                            QPointF dirVector = targetPoint - currentPos;
+                            float distance = qSqrt(dirVector.x() * dirVector.x() + dirVector.y() * dirVector.y());
+                            
+                            // 初始化速度向量
+                            QPointF velocity;
+                            
+                            // 如果已经非常接近目标点，则匹配蛇头的速度以保持队形
+                            if (distance < 5.0) {
+                                velocity = QPointF(dronesInfo[snakeHead].vx, dronesInfo[snakeHead].vy);
+                            } else {
+                                // 否则，向目标点移动
+                                float maxSpeed = 50.0;
+                                if (distance > 0) {
+                                    dirVector = QPointF(dirVector.x() / distance, dirVector.y() / distance);
+                                    velocity = dirVector * maxSpeed;
+                                }
+                            }
+                            
+                            qDebug() << "[FollowCalc] " << uid << " 跟随" << snakeHead << "路径点，索引:" << b2TargetIndex 
+                                    << "目标点:" << targetPoint << "速度:" << velocity;
+                            
+                            // 发送控制命令
+                            sendControlCommand(uid, velocity);
+                            continue; // 跳过后续处理
+                        }
+                    } else if (uid == "B3" && currentStrategy == 3) {
+                        // 确定B3应该跟随谁 - 如果B2存活则跟随B2，否则跟随蛇头
+                        QString followTarget = dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0 ? "B2" : snakeHead;
+                        
+                        // 确保B3不是蛇头且跟随目标存在
+                        if (uid != snakeHead && dronesInfo.contains(followTarget) && followTarget != "B3") {
+                            // B3跟随目标的路径点
+                            if (gridMap->m_smoothedPathMap.contains(snakeHead) && gridMap->m_smoothedPathMap[snakeHead].size() > 1) {
+                                QPointF currentPos(it.value().x, it.value().y);
+                                
+                                // 找到蛇头当前在路径上的位置索引
+                                int headIndex = gridMap->findClosestPathPointIndex(
+                                    QPointF(dronesInfo[snakeHead].x, dronesInfo[snakeHead].y), 
+                                    snakeHead);
+                                
+                                // B3跟随蛇头路径，但落后更多路径点
+                                // 如果B2存活，则在B2后面跟随
+                                int b3TargetIndex;
+                                if (followTarget == "B2") {
+                                    b3TargetIndex = qMax(0, headIndex - 20); // 比B2再落后10个点
+                                } else {
+                                    b3TargetIndex = qMax(0, headIndex - 10); // 直接跟随蛇头
+                                }
+                                
+                                // 获取目标点
+                                QPointF targetPoint = gridMap->m_smoothedPathMap[snakeHead][b3TargetIndex];
+                                
+                                // 计算方向向量
+                                QPointF dirVector = targetPoint - currentPos;
+                                float distance = qSqrt(dirVector.x() * dirVector.x() + dirVector.y() * dirVector.y());
+                                
+                                // 初始化速度向量
+                                QPointF velocity;
+                                
+                                // 如果已经非常接近目标点，则匹配前面无人机的速度以保持队形
+                                if (distance < 5.0) {
+                                    velocity = QPointF(dronesInfo[followTarget].vx, dronesInfo[followTarget].vy);
+                                } else {
+                                    // 否则，向目标点移动
+                                    float maxSpeed = 50.0;
+                                    if (distance > 0) {
+                                        dirVector = QPointF(dirVector.x() / distance, dirVector.y() / distance);
+                                        velocity = dirVector * maxSpeed;
+                                    }
+                                }
+                                
+                                qDebug() << "[FollowCalc] " << uid << " 跟随" << snakeHead 
+                                        << "路径点，索引:" << b3TargetIndex 
+                                        << "目标点:" << targetPoint << "速度:" << velocity;
+                                
+                                // 发送控制命令
+                                sendControlCommand(uid, velocity);
+                                continue; // 跳过后续处理
+                            }
+                        }
+                    }
                 }
             }
         } else if (currentStrategy == 2 && isMaddpgInitialized) {
@@ -1110,14 +1308,19 @@ void MainWindow::onTargetReached(const QString& droneId) {
     // 更新TargetManager中的状态
     targetManager->setTargetReached(droneId, true);
 
-    // 只为到达终点的这个无人机重新规划路径
+    // 根据当前策略决定是否为到达终点的无人机重新规划路径
     if(currentStrategy == 1)
     {
         qDebug() << "策略1： 无人机 "<<droneId<<" 已到达目标点，准备规划下一个目标";
         planPathForSingleDrone_S1(droneId);
-    }else if(currentStrategy == 3){
-        qDebug() << "策略3： 无人机 "<<droneId<<" 已到达目标点，准备规划下一个目标";
-        planPathForSingleDrone_S3(droneId);
+    } else if(currentStrategy == 3) {
+        // 策略3只为B1规划路径
+        if (droneId == "B1") {
+            qDebug() << "策略3： 蛇头 "<<droneId<<" 已到达目标点，准备规划下一个目标";
+            planPathForSingleDrone_S3(droneId);
+        } else {
+            qDebug() << "策略3： 跟随者 "<<droneId<<" 已到达目标点，无需规划新路径";
+        }
     }
 }
 //*****************策略1 A* 算法进行路径规划和动态避障****************
@@ -1205,7 +1408,7 @@ void MainWindow::planPathForSingleDrone_S1(const QString &droneId) {
 
 
 //*****************策略3 A* 算法进行路径规划和动态避障****************
-void MainWindow::planPathForSingleDrone_S3(const QString &droneId) {
+void MainWindow::planPathForSingleDrone_S3(const QString &droneId) { // ！策略3路径规划主函数
     // 检查游戏是否正在运行
     if (gameStage != "running") {
         qDebug() << "游戏未运行，无法为 " << droneId << " 规划路径";
@@ -1214,6 +1417,12 @@ void MainWindow::planPathForSingleDrone_S3(const QString &droneId) {
 
     // 检查该无人机是否存在且血量大于0
     if (!dronesInfo.contains(droneId) || dronesInfo[droneId].hp <= 0) {
+        return;
+    }
+
+    // 只为B1规划路径，B2和B3直接跟随B1，不需要规划路径
+    if (droneId != "B1") {
+        qDebug() << "[Strategy3] 收到" << droneId << "到达目标点的通知，但在蛇形模式下只为B1规划路径";
         return;
     }
 
@@ -1659,28 +1868,93 @@ void MainWindow::calculateCloudVelocities() {
 //}
 
 // 处理Strategy3的needReplanPath信号
-void MainWindow::onStrategy3NeedReplanPath(const QString& droneId, const QPoint& targetPoint)
+void MainWindow::onStrategy3NeedReplanPath(QString droneId, QPoint current, QPoint target) // ！策略3重规划槽函数
 {
-    // 检查游戏是否正在运行
-    if (gameStage != "running") {
-        qDebug() << "游戏未运行，无法为 " << droneId << " 规划路径";
+    if (currentStrategy != 3 || gameStage != "running") {
         return;
     }
 
+    // 确定当前的蛇头
+    QString snakeHead = "";
+    if (dronesInfo.contains("B1") && dronesInfo["B1"].hp > 0) {
+        snakeHead = "B1";  // B1优先作为蛇头
+    } else if (dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0) {
+        snakeHead = "B2";  // B1坠毁时B2成为蛇头
+    } else if (dronesInfo.contains("B3") && dronesInfo["B3"].hp > 0) {
+        snakeHead = "B3";  // B1和B2坠毁时B3成为蛇头
+    }
+
+    // 只为蛇头规划路径
+    if (droneId == snakeHead) {
+        qDebug() << "[Strategy3] 收到needReplanPath信号，为无人机" << droneId << "规划路径，从" << current << "到" << target;
+        
+        // 检查该无人机是否存在且血量大于0
+        if (!dronesInfo.contains(droneId) || dronesInfo[droneId].hp <= 0) {
+            qDebug() << "[Strategy3] 无人机" << droneId << "不存在或已坠毁，无法规划路径";
+            return;
+        }
+        
+        // 获取无人机当前位置的栅格坐标
+        int gridCol = dronesInfo[droneId].x / gridMap->GRID_SIZE;
+        int gridRow = dronesInfo[droneId].y / gridMap->GRID_SIZE;
+        QPoint startPoint(gridCol, gridRow);
+        
+        // 将目标点从像素坐标转换为栅格坐标
+        int targetGridCol = target.x() / gridMap->GRID_SIZE;
+        int targetGridRow = target.y() / gridMap->GRID_SIZE;
+        QPoint gridTargetPoint(targetGridCol, targetGridRow);
+        
+        // 确保栅格坐标在有效范围内
+        gridTargetPoint.setX(qBound(0, gridTargetPoint.x(), gridMap->GRID_COLS - 1));
+        gridTargetPoint.setY(qBound(0, gridTargetPoint.y(), gridMap->GRID_ROWS - 1));
+        
+        // 使用SO3的adjustTargetPoint方法确保目标点不在障碍物区域
+        gridTargetPoint = SO3->adjustTargetPoint(gridTargetPoint, true);
+        
+        qDebug() << "[Strategy3] " << droneId << " 规划路径到栅格目标: " << gridTargetPoint;
+        qDebug() << "[Strategy3] " << droneId << " 经调整后的栅格目标点: " << gridTargetPoint;
+        
+        // 检查当前位置和目标位置是否相同，如果相同则不需要规划
+        if (startPoint == gridTargetPoint) {
+            qDebug() << "[Strategy3] 当前位置已经是目标位置，无需规划路径";
+            return;
+        }
+        
+        // 在主线程中执行UI相关操作和发送信号
+        QMetaObject::invokeMethod(this, [=]() {
+            gridMap->clearPath(droneId);
+            // 发送路径规划请求 - 栅格坐标
+            emit StartfindPath(startPoint, gridTargetPoint, droneId);
+        }, Qt::QueuedConnection);
+    } else {
+        qDebug() << "[Strategy3] 忽略非蛇头无人机" << droneId << "的路径规划请求";
+    }
+}
+
+// 为策略3的单个无人机规划路径 - 作为直接规划路径的辅助函数
+void MainWindow::planPathForSingleDrone_S3(const QString& droneId, const QPoint& currentPoint, const QPoint& targetPoint)
+{
+    // 检查是否正在运行
+    if (gameStage != "running") {
+        qDebug() << "[Strategy3] 游戏未运行，无法规划路径";
+        return;
+    }
+    
     // 检查该无人机是否存在且血量大于0
     if (!dronesInfo.contains(droneId) || dronesInfo[droneId].hp <= 0) {
+        qDebug() << "[Strategy3] 无人机" << droneId << "不存在或已坠毁，无法规划路径";
         return;
     }
-
-
-
-    // 获取无人机当前位置的栅格坐标
+    
+    // 获取无人机当前位置的栅格坐标 - 使用实时位置而不是传入的参数
     int gridCol = dronesInfo[droneId].x / gridMap->GRID_SIZE;
     int gridRow = dronesInfo[droneId].y / gridMap->GRID_SIZE;
     QPoint startPoint(gridCol, gridRow);
-
+    
     // 将目标点从像素坐标转换为栅格坐标
-    QPoint gridTargetPoint(targetPoint.x() / gridMap->GRID_SIZE, targetPoint.y() / gridMap->GRID_SIZE);
+    int targetGridCol = targetPoint.x() / gridMap->GRID_SIZE;
+    int targetGridRow = targetPoint.y() / gridMap->GRID_SIZE;
+    QPoint gridTargetPoint(targetGridCol, targetGridRow);
     
     // 确保栅格坐标在有效范围内
     gridTargetPoint.setX(qBound(0, gridTargetPoint.x(), gridMap->GRID_COLS - 1));
@@ -1688,13 +1962,54 @@ void MainWindow::onStrategy3NeedReplanPath(const QString& droneId, const QPoint&
     
     // 使用SO3的adjustTargetPoint方法确保目标点不在障碍物区域
     gridTargetPoint = SO3->adjustTargetPoint(gridTargetPoint, true);
+    
+    qDebug() << "[Strategy3] " << droneId << " 规划路径到栅格目标: " << gridTargetPoint;
+    qDebug() << "[Strategy3] " << droneId << " 经调整后的栅格目标点: " << gridTargetPoint;
+    
+    // 检查当前位置和目标位置是否相同，如果相同则不需要规划
+    if (startPoint == gridTargetPoint) {
+        qDebug() << "[Strategy3] 当前位置已经是目标位置，无需规划路径";
+        return;
+    }
+    
+    // 清除之前的路径并规划新路径
+    gridMap->clearPath(droneId);
+    emit StartfindPath(startPoint, gridTargetPoint, droneId);
+}
 
-    // 在主线程中执行UI相关操作和发送信号
-    QMetaObject::invokeMethod(this, [=]() {
-        gridMap->clearPath(droneId);
-        // 发送路径规划请求 - 栅格坐标
-        qDebug() << "[Strategy3] 收到needReplanPath信号，为无人机" << droneId 
-                << "规划路径，从" << startPoint << "到" << gridTargetPoint;
-        emit StartfindPath(startPoint, gridTargetPoint, droneId);
-    }, Qt::QueuedConnection);
+bool MainWindow::isPathInObstacle(const QString &droneId, const QList<QPoint> &path)
+{
+    // 策略3只检查蛇头的路径
+    if (currentStrategy == 3) {
+        // 确定当前的蛇头
+        QString snakeHead = "";
+        if (dronesInfo.contains("B1") && dronesInfo["B1"].hp > 0) {
+            snakeHead = "B1";  // B1优先作为蛇头
+        } else if (dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0) {
+            snakeHead = "B2";  // B1坠毁时B2成为蛇头
+        } else if (dronesInfo.contains("B3") && dronesInfo["B3"].hp > 0) {
+            snakeHead = "B3";  // B1和B2坠毁时B3成为蛇头
+        }
+
+        // 只检查蛇头的路径
+        if (droneId != snakeHead) {
+            return false;
+        }
+    }
+    
+    // 检查路径是否穿过障碍物
+    for (const QPoint& gridPoint : path) {
+        // 遍历所有障碍物，检查路径点是否在障碍物内
+        for (auto it = obstaclesInfo.begin(); it != obstaclesInfo.end(); ++it) {
+            const ObstacleInfo &obstacle = it.value();
+            if (gridMap->isPointInCircle(
+                gridPoint.x() * gridMap->GRID_SIZE, 
+                gridPoint.y() * gridMap->GRID_SIZE, 
+                obstacle.x, obstacle.y, obstacle.r)) {
+                return true;
+            }
+        }
+    }
+    
+    return false;
 }

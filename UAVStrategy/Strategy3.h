@@ -52,6 +52,7 @@ public:
     static const int MIN_TARGET_UPDATE_DISTANCE = 3; // 最小目标更新距离（栅格）
     static const int PATH_UPDATE_THRESHOLD = 2;  // 路径更新阈值（栅格）
     static const int ATTACK_RANGE = 5;  // 攻击范围（栅格）
+    static const int PATH_HISTORY_LENGTH = 10; // 路径历史记录长度
 
     // 巡逻点和阵型偏移定义
     static const QVector<QPoint> PATROL_POINTS;  // 巡逻点列表
@@ -59,7 +60,7 @@ public:
     
 signals:
     // 添加重新规划路径的信号
-    void needReplanPath(const QString& droneId, const QPoint& targetPoint);
+    void needReplanPath(const QString& droneId, const QPoint& currentPosition, const QPoint& targetPoint);
 
 private:
     // 寻找全局最优攻击目标（血量最低的敌人）
@@ -149,6 +150,9 @@ private:
 
     // 上次目标点 - 键是无人机ID，值是上次目标点
     QMap<QString, QPoint> m_lastTargets;
+
+    // 无人机路径历史 - 用于蛇形跟随
+    QMap<QString, QList<QPoint>> m_dronePathHistory;
 
     // 是否检测到敌机
     bool m_hasEnemyDetected;

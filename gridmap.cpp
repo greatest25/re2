@@ -364,6 +364,37 @@ bool GridMap::isPointInCircle(int px, int py, int cx, int cy, int radius) {     
     return (dx * dx + dy * dy) <= (radius * radius);
 }
 
+// 检测线段是否与圆相交
+bool GridMap::isLineIntersectCircle(double x1, double y1, double x2, double y2, double cx, double cy, double radius) {
+    // 向量AB (线段的方向向量)
+    double ABx = x2 - x1;
+    double ABy = y2 - y1;
+    
+    // 向量AC (线段起点到圆心的向量)
+    double ACx = cx - x1;
+    double ACy = cy - y1;
+    
+    // 线段AB的长度平方
+    double AB_squared = ABx * ABx + ABy * ABy;
+    
+    // 计算点C到线段AB的最近点的参数值t
+    double t = (ACx * ABx + ACy * ABy) / AB_squared;
+    
+    // 限制t在[0,1]范围内，确保我们是在线段上而不是直线上
+    t = qMax(0.0, qMin(1.0, t));
+    
+    // 计算线段上离圆心最近的点P
+    double Px = x1 + t * ABx;
+    double Py = y1 + t * ABy;
+    
+    // 计算点P到圆心C的距离平方
+    double dx = Px - cx;
+    double dy = Py - cy;
+    double distance_squared = dx * dx + dy * dy;
+    
+    // 如果距离小于等于半径，则线段与圆相交
+    return distance_squared <= radius * radius;
+}
 
 bool GridMap::isCellIntersectCircle(int gridRow, int gridCol, int cx, int cy, int radius) {        // 检查格子是否与圆相交（圆外接马赛克圆）
     // 计算格子的四个角点坐标
