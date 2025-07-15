@@ -52,7 +52,7 @@ public:
     static const int MIN_TARGET_UPDATE_DISTANCE = 3; // 最小目标更新距离（栅格）
     static const int PATH_UPDATE_THRESHOLD = 2;  // 路径更新阈值（栅格）
     static const int ATTACK_RANGE = 5;  // 攻击范围（栅格）
-    
+
     // 巡逻点和阵型偏移定义
     static const QVector<QPoint> PATROL_POINTS;  // 巡逻点列表
     static const QMap<QString, QPoint> FORMATION_OFFSETS;  // 阵型偏移

@@ -217,6 +217,26 @@ bool Strategy3::needUpdateTarget(const QString& droneId, const QPoint& newTarget
     int dx = qAbs(newTarget.x() - currentTarget.x());
     int dy = qAbs(newTarget.y() - currentTarget.y());
 
+    // 检查是否有目标敌机
+    QString targetEnemyId = m_droneTargetEnemies.value(droneId);
+    if (!targetEnemyId.isEmpty()) {
+        // 检查敌机位置变化
+        if (m_enemyDrones.contains(targetEnemyId)) {
+            QPoint enemyPos = m_enemyDrones[targetEnemyId].position;
+            QPoint enemyGridPos(enemyPos.x() / GRID_SIZE, enemyPos.y() / GRID_SIZE);
+            
+            // 计算敌机与当前目标点的距离
+            int enemyDx = qAbs(enemyGridPos.x() - currentTarget.x());
+            int enemyDy = qAbs(enemyGridPos.y() - currentTarget.y());
+            
+            // 如果敌机位置偏离当前目标点较大，需要更新
+            if (enemyDx >= 3 || enemyDy >= 3) {
+                qDebug() << "[Strategy3] 敌机" << targetEnemyId << "位置发生较大变化，更新目标点";
+                return true;
+            }
+        }
+    }
+
     // 如果是敌机位置，总是允许更新 - 优先处理
     for (auto enemyIt = m_enemyDrones.constBegin(); enemyIt != m_enemyDrones.constEnd(); ++enemyIt) {
         const DroneState& enemyState = enemyIt.value();
@@ -246,6 +266,41 @@ void Strategy3::updateGameState(const QMap<QString, DroneState>& friendlyDrones,
 {
     // 更新无人机状态
     m_friendlyDrones = friendlyDrones;
+
+    // 检查敌机位置变化
+    for (auto it = enemyDrones.constBegin(); it != enemyDrones.constEnd(); ++it) {
+        const QString& enemyId = it.key();
+        const DroneState& enemyState = it.value();
+        
+        // 如果这个敌机之前就存在，检查位置变化
+        if (m_enemyDrones.contains(enemyId)) {
+            QPoint oldPos = m_enemyDrones[enemyId].position;
+            QPoint newPos = enemyState.position;
+            
+            // 计算位置变化（栅格坐标）
+            int dx = qAbs(oldPos.x() - newPos.x()) / GRID_SIZE;
+            int dy = qAbs(oldPos.y() - newPos.y()) / GRID_SIZE;
+            
+            // 如果位置变化较大，更新所有以这个敌机为目标的无人机的目标点
+            if (dx >= 3 || dy >= 3) {
+                qDebug() << "[Strategy3] 敌机" << enemyId << "位置发生较大变化";
+                for (auto droneIt = m_droneTargetEnemies.begin(); droneIt != m_droneTargetEnemies.end(); ++droneIt) {
+                    if (droneIt.value() == enemyId) {
+                        // 更新这个无人机的目标点为敌机新位置
+                        QPoint newTarget(newPos.x() / GRID_SIZE, newPos.y() / GRID_SIZE);
+                        if (needUpdateTarget(droneIt.key(), newTarget)) {
+                            updateDroneTarget(droneIt.key(), newTarget);
+                            // 发送重规划路径的信号
+                            QPoint targetPixelPos(newTarget.x() * GRID_SIZE, newTarget.y() * GRID_SIZE);
+                            emit needReplanPath(droneIt.key(), targetPixelPos);
+                            qDebug() << "[Strategy3] 更新无人机" << droneIt.key() << "的目标点到敌机" << enemyId << "的新位置";
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     m_enemyDrones = enemyDrones;
 
     // 更新敌机记忆
@@ -492,18 +547,18 @@ void Strategy3::assignPatrolTargets()
         
         // 转换为像素坐标
         QPoint targetPixelPos(targetGridPos.x() * GRID_SIZE + GRID_SIZE/2,
-                           targetGridPos.y() * GRID_SIZE + GRID_SIZE/2);
+                            targetGridPos.y() * GRID_SIZE + GRID_SIZE/2);
         
         qDebug() << "[Strategy3] 无人机" << droneId << "更新巡逻位置到(栅格):" << targetGridPos 
                  << "目标点(像素):" << targetPixelPos;
         
         // 直接发送路径规划请求，不检查时间间隔
-        emit needReplanPath(droneId, targetPixelPos);
+            emit needReplanPath(droneId, targetPixelPos);
     }
     
     // 只有当所有无人机都接近目标点时，才更新巡逻点索引
     if (shouldUpdatePatrolIndex) {
-        m_patrolIndex = (m_patrolIndex + 1) % PATROL_POINTS.size();
+    m_patrolIndex = (m_patrolIndex + 1) % PATROL_POINTS.size();
     }
 }
 
@@ -551,12 +606,12 @@ void Strategy3::assignRolesAndTargets()
         m_droneTargets[m_currentAttackerId] = predictedPos;
         m_droneTargetEnemies[m_currentAttackerId] = m_currentTargetedEnemyId;
         
-        // 立即触发路径规划
-        QPoint pixelTargetPos(predictedPos.x() * GRID_SIZE + GRID_SIZE/2,
-                           predictedPos.y() * GRID_SIZE + GRID_SIZE/2);
-        
-        qDebug() << "[Strategy3] 无人机" << m_currentAttackerId << "作为攻击者，目标点:" << predictedPos << "(预测位置)";
-        emit needReplanPath(m_currentAttackerId, pixelTargetPos);
+            // 立即触发路径规划
+            QPoint pixelTargetPos(predictedPos.x() * GRID_SIZE + GRID_SIZE/2,
+                               predictedPos.y() * GRID_SIZE + GRID_SIZE/2);
+            
+            qDebug() << "[Strategy3] 无人机" << m_currentAttackerId << "作为攻击者，目标点:" << predictedPos << "(预测位置)";
+            emit needReplanPath(m_currentAttackerId, pixelTargetPos);
         return;
     }
     
@@ -590,13 +645,13 @@ void Strategy3::assignRolesAndTargets()
         m_droneTargets[droneId] = targetPos;
         m_droneTargetEnemies[droneId] = m_currentTargetedEnemyId;
         
-        // 立即触发路径规划
-        QPoint pixelTargetPos(targetPos.x() * GRID_SIZE + GRID_SIZE/2,
-                           targetPos.y() * GRID_SIZE + GRID_SIZE/2);
-        
-        qDebug() << "[Strategy3] 无人机" << droneId << "目标敌机:" << m_currentTargetedEnemyId 
-                 << "，目标点:" << targetPos << "(包围位置)";
-        emit needReplanPath(droneId, pixelTargetPos);
+            // 立即触发路径规划
+            QPoint pixelTargetPos(targetPos.x() * GRID_SIZE + GRID_SIZE/2,
+                               targetPos.y() * GRID_SIZE + GRID_SIZE/2);
+            
+            qDebug() << "[Strategy3] 无人机" << droneId << "目标敌机:" << m_currentTargetedEnemyId 
+                     << "，目标点:" << targetPos << "(包围位置)";
+            emit needReplanPath(droneId, pixelTargetPos);
     }
 }
 
