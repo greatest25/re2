@@ -310,7 +310,7 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
     
     // 策略3蛇头变更检测
     static QString lastSnakeHead = "";
-    if (currentStrategy == 3 && gameStage == "running") { // ！策略3主流程入口
+    if (currentStrategy == 3 && gameStage == "running") { // TODO 策略3主流程入口
         // 确定当前的蛇头
         QString newSnakeHead = "";
         if (dronesInfo.contains("B1") && dronesInfo["B1"].hp > 0) {
@@ -613,8 +613,28 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                     continue;
                 }
 
+                // 策略1的移动逻辑
+                if (currentStrategy == 1) {
+                    // 为每个无人机计算速度并移动
+                    if (gridMap->m_smoothedPathMap.contains(uid) && gridMap->m_smoothedPathMap[uid].size() > 1) {
+                        // 获取无人机当前位置
+                        QPointF currentPos(it.value().x, it.value().y);
+                        
+                        // 使用GridMap计算速度
+                        QPointF velocity = gridMap->calculateVelocity(uid, currentPos);
+
+                        // 添加Debug打印
+                        qDebug() << "[Strategy1][VelocityCalc]" << uid << "Calculated Velocity:" << velocity;
+
+                        // 发送计算出的速度指令
+                        sendControlCommand(uid, velocity);
+                    } else {     //路径无效或太短时飞机暂停
+                        QPointF velocity(0,0);
+                        sendControlCommand(uid, velocity);
+                    }
+                }
                 // 策略3中，蛇头使用路径规划，其他无人机直接跟随
-                if (currentStrategy == 3) {
+                else if (currentStrategy == 3) {
                     // 如果是当前的蛇头，使用正常的路径规划逻辑
                     if (uid == snakeHead) {
                         if (gridMap->m_smoothedPathMap.contains(uid) && gridMap->m_smoothedPathMap[uid].size() > 1) {
@@ -679,7 +699,7 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                         // 确定B3应该跟随谁 - 如果B2存活则跟随B2，否则跟随蛇头
                         QString followTarget = dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0 ? "B2" : snakeHead;
                         
-                        // 确保B3不是蛇头且跟随目标存在
+                        //  确保B3不是蛇头且跟随目标存在
                         if (uid != snakeHead && dronesInfo.contains(followTarget) && followTarget != "B3") {
                             // B3跟随目标的路径点
                             if (gridMap->m_smoothedPathMap.contains(snakeHead) && gridMap->m_smoothedPathMap[snakeHead].size() > 1) {
