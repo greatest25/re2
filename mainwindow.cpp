@@ -533,10 +533,8 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                     snakeHead = "B3";  // B1和B2坠毁时B3成为蛇头
                 }
                 
-                // 只为蛇头检查路径
-                if (uid != snakeHead) {
-                    continue;
-                }
+                // 在间隔增大的情况下，所有无人机都需要检查障碍物
+                // 不再限制只为蛇头检查路径
             }
 
             // 如果有平滑路径且不为空
@@ -562,10 +560,25 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                             planPathForSingleDrone_S1(uid);
                             qDebug() << "策略1：路径在障碍物中，无人机 "<<uid<<" 需要重规划路径";
                         } else if (currentStrategy == 3) {
-                            // 在策略3中，只为B1重规划路径
-                            if (uid == "B1") {
-                                planPathForSingleDrone_S3(uid); // ！策略3障碍物重规划
+                            // 修改：在策略3中，所有无人机都可以重规划路径以避障
+                            // 蛇头直接规划新路径
+                            QString snakeHead = "";
+                            if (dronesInfo.contains("B1") && dronesInfo["B1"].hp > 0) {
+                                snakeHead = "B1";
+                            } else if (dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0) {
+                                snakeHead = "B2";
+                            } else if (dronesInfo.contains("B3") && dronesInfo["B3"].hp > 0) {
+                                snakeHead = "B3";
+                            }
+                            
+                            if (uid == snakeHead) {
+                                // 蛇头按正常方式规划路径
+                                planPathForSingleDrone_S3(uid);
                                 qDebug() << "策略3：路径在障碍物中，蛇头 "<<uid<<" 需要重规划路径";
+                            } else {
+                                // 跟随者遇到障碍物时，临时规划一条避障路径
+                                handleFollowerObstacleAvoidance(uid, snakeHead);
+                                qDebug() << "策略3：路径在障碍物中，跟随者 "<<uid<<" 需要临时避障";
                             }
                         }
                     } else {
@@ -653,75 +666,98 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                             QPointF velocity(0,0);
                             sendControlCommand(uid, velocity);
                         }
-                    } else if (uid == "B2" && dronesInfo.contains(snakeHead) && snakeHead != "B2") {
-                        // B2跟随蛇头的路径点
-                        if (gridMap->m_smoothedPathMap.contains(snakeHead) && gridMap->m_smoothedPathMap[snakeHead].size() > 1) {
-                            QPointF currentPos(it.value().x, it.value().y);
-                            
-                            // 找到蛇头当前在路径上的位置索引
-                            int headIndex = gridMap->findClosestPathPointIndex(
-                                QPointF(dronesInfo[snakeHead].x, dronesInfo[snakeHead].y), 
-                                snakeHead);
-                            
-                            // B2跟随蛇头路径，但落后10个路径点
-                            int b2TargetIndex = qMax(0, headIndex - 10);
-                            
-                            // 获取目标点
-                            QPointF targetPoint = gridMap->m_smoothedPathMap[snakeHead][b2TargetIndex];
-                            
-                            // 计算方向向量
-                            QPointF dirVector = targetPoint - currentPos;
-                            float distance = qSqrt(dirVector.x() * dirVector.x() + dirVector.y() * dirVector.y());
-                            
-                            // 初始化速度向量
-                            QPointF velocity;
-                            
-                            // 如果已经非常接近目标点，则匹配蛇头的速度以保持队形
-                            if (distance < 5.0) {
-                                velocity = QPointF(dronesInfo[snakeHead].vx, dronesInfo[snakeHead].vy);
+                    } else if (uid == "B2" && currentStrategy == 3) {
+                        // B2的逻辑：如果B1存活，则跟随B1；如果B1坠毁，则自己成为蛇头（已由前面的snakeHead判断处理）
+                        // 确保B2不是蛇头
+                        if (uid != snakeHead) {
+                            // 确定路径源 - B2只跟随B1，如果B1坠毁，B2就成为蛇头
+                            QString pathSource = "";
+                            if (dronesInfo.contains("B1") && dronesInfo["B1"].hp > 0) {
+                                pathSource = "B1";  // B1存活，跟随B1
                             } else {
-                                // 否则，向目标点移动
-                                float maxSpeed = 50.0;
-                                if (distance > 0) {
-                                    dirVector = QPointF(dirVector.x() / distance, dirVector.y() / distance);
-                                    velocity = dirVector * maxSpeed;
-                                }
+                                // B1坠毁，B2应该已经成为蛇头，不应该进入这个分支
+                                qDebug() << "[Strategy3] B2检测到B1已坠毁，但B2不是蛇头，逻辑错误";
+                                continue;
                             }
                             
-                            qDebug() << "[FollowCalc] " << uid << " 跟随" << snakeHead << "路径点，索引:" << b2TargetIndex 
-                                    << "目标点:" << targetPoint << "速度:" << velocity;
-                            
-                            // 发送控制命令
-                            sendControlCommand(uid, velocity);
-                            continue; // 跳过后续处理
-                        }
-                    } else if (uid == "B3" && currentStrategy == 3) {
-                        // 确定B3应该跟随谁 - 如果B2存活则跟随B2，否则跟随蛇头
-                        QString followTarget = dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0 ? "B2" : snakeHead;
-                        
-                        //  确保B3不是蛇头且跟随目标存在
-                        if (uid != snakeHead && dronesInfo.contains(followTarget) && followTarget != "B3") {
-                            // B3跟随目标的路径点
-                            if (gridMap->m_smoothedPathMap.contains(snakeHead) && gridMap->m_smoothedPathMap[snakeHead].size() > 1) {
+                            // B2跟随B1的路径点
+                            if (gridMap->m_smoothedPathMap.contains(pathSource) && gridMap->m_smoothedPathMap[pathSource].size() > 1) {
                                 QPointF currentPos(it.value().x, it.value().y);
                                 
-                                // 找到蛇头当前在路径上的位置索引
+                                // 找到B1当前在路径上的位置索引
                                 int headIndex = gridMap->findClosestPathPointIndex(
-                                    QPointF(dronesInfo[snakeHead].x, dronesInfo[snakeHead].y), 
-                                    snakeHead);
+                                    QPointF(dronesInfo[pathSource].x, dronesInfo[pathSource].y), 
+                                    pathSource);
                                 
-                                // B3跟随蛇头路径，但落后更多路径点
-                                // 如果B2存活，则在B2后面跟随
-                                int b3TargetIndex;
-                                if (followTarget == "B2") {
-                                    b3TargetIndex = qMax(0, headIndex - 20); // 比B2再落后10个点
-                                } else {
-                                    b3TargetIndex = qMax(0, headIndex - 10); // 直接跟随蛇头
-                                }
+                                // B2跟随B1路径，但落后80个路径点
+                                int b2TargetIndex = qMax(0, headIndex - 80);
                                 
                                 // 获取目标点
-                                QPointF targetPoint = gridMap->m_smoothedPathMap[snakeHead][b3TargetIndex];
+                                QPointF targetPoint = gridMap->m_smoothedPathMap[pathSource][b2TargetIndex];
                                 
+                                // 检查目标点到当前位置的路径是否有障碍物
+                                bool hasObstacle = false;
+                                QPoint currentGridPos(currentPos.x() / gridMap->GRID_SIZE, currentPos.y() / gridMap->GRID_SIZE);
+                                QPoint targetGridPos(targetPoint.x() / gridMap->GRID_SIZE, targetPoint.y() / gridMap->GRID_SIZE);
+                                
+                                // 检查从当前位置到目标点的直线路径上是否有障碍物
+                                QList<QPoint> pathToCheck = getLinePoints(currentGridPos, targetGridPos);
+                                for (const QPoint& point : pathToCheck) {
+                                    if (isGridPointInObstacle(point)) {
+                                        hasObstacle = true;
+                                        qDebug() << "[Strategy3] B2检测到前方路径有障碍物，需要避障";
+                                        break;
+                                    }
+                                }
+                                
+                                if (hasObstacle) {
+                                    // 如果检测到障碍物，寻找安全点并规划避障路径
+                                    QPoint safePoint = findSafePointNearTarget(currentGridPos, targetGridPos);
+                                    
+                                    // 如果找到了安全点且与当前位置不同，规划路径到安全点
+                                    if (safePoint != currentGridPos) {
+                                        // 清除旧路径
+                                        gridMap->clearPath(uid);
+                                        
+                                        // 规划新路径到安全点
+                                        emit StartfindPath(currentGridPos, safePoint, uid);
+                                        qDebug() << "[Strategy3] B2规划避障路径到安全点:" << safePoint;
+                                        
+                                        // 添加一个连接，当路径规划完成后立即执行移动
+                                        QMetaObject::Connection* conn = new QMetaObject::Connection();
+                                        *conn = connect(pathPlanner, &PathPlanner::pathPlanned, this, [this, uid, conn](const QVector<QPoint>& path, const QString& droneId) {
+                                            // 确保这是我们正在等待的无人机的路径
+                                            if (droneId == uid) {
+                                                // 断开连接，避免重复处理
+                                                disconnect(*conn);
+                                                delete conn;
+                                                
+                                                // 检查路径是否有效
+                                                if (!path.isEmpty() && gridMap->m_smoothedPathMap.contains(droneId) && gridMap->m_smoothedPathMap[droneId].size() > 1) {
+                                                    // 获取无人机当前位置
+                                                    QPointF currentPos(dronesInfo[droneId].x, dronesInfo[droneId].y);
+                                                    
+                                                    // 使用GridMap计算速度
+                                                    QPointF velocity = gridMap->calculateVelocity(droneId, currentPos);
+                                                    
+                                                    qDebug() << "[Strategy3] B2避障后计算速度:" << velocity;
+                                                    
+                                                    // 发送控制命令
+                                                    sendControlCommand(droneId, velocity);
+                                                } else {
+                                                    qDebug() << "[Strategy3] B2避障路径规划失败或路径无效，保持静止";
+                                                    QPointF velocity(0, 0);
+                                                    sendControlCommand(droneId, velocity);
+                                                }
+                                            }
+                                        });
+                                        
+                                        // 跳过后续处理，等待新路径规划完成
+                                        continue;
+                                    }
+                                }
+                                
+                                // 如果没有障碍物或无法找到安全点，继续正常跟随逻辑
                                 // 计算方向向量
                                 QPointF dirVector = targetPoint - currentPos;
                                 float distance = qSqrt(dirVector.x() * dirVector.x() + dirVector.y() * dirVector.y());
@@ -729,7 +765,146 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                                 // 初始化速度向量
                                 QPointF velocity;
                                 
-                                // 如果已经非常接近目标点，则匹配前面无人机的速度以保持队形
+                                // 如果已经非常接近目标点，则匹配B1的速度以保持队形
+                                if (distance < 5.0) {
+                                    velocity = QPointF(dronesInfo["B1"].vx, dronesInfo["B1"].vy);
+                                } else {
+                                    // 否则，向目标点移动
+                                    float maxSpeed = 50.0;
+                                    if (distance > 0) {
+                                        dirVector = QPointF(dirVector.x() / distance, dirVector.y() / distance);
+                                        velocity = dirVector * maxSpeed;
+                                    }
+                                }
+                                
+                                qDebug() << "[FollowCalc] " << uid << " 跟随B1路径点，索引:" << b2TargetIndex 
+                                        << "目标点:" << targetPoint << "速度:" << velocity;
+                                
+                                // 发送控制命令
+                                sendControlCommand(uid, velocity);
+                                continue; // 跳过后续处理
+                            }
+                        }
+                    } else if (uid == "B3" && currentStrategy == 3) {
+                        // B3的逻辑：如果B2存活，则跟随B2；如果B2坠毁但B1存活，则跟随B1；如果B1和B2都坠毁，则自己成为蛇头（已由前面的snakeHead判断处理）
+                        // 确定B3应该跟随谁
+                        QString followTarget = "";
+                        if (dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0) {
+                            followTarget = "B2";  // B2存活，跟随B2
+                        } else if (dronesInfo.contains("B1") && dronesInfo["B1"].hp > 0) {
+                            followTarget = "B1";  // B2坠毁但B1存活，跟随B1
+                        }
+                        
+                        // 确保B3不是蛇头且有跟随目标
+                        if (uid != snakeHead && !followTarget.isEmpty()) {
+                            // 确定要跟随的路径
+                            QString pathSource = "";
+                            
+                            // 确定当前的蛇头（路径源）
+                            if (dronesInfo.contains("B1") && dronesInfo["B1"].hp > 0) {
+                                pathSource = "B1";  // B1存活，使用B1的路径
+                            } else if (dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0) {
+                                pathSource = "B2";  // B1坠毁但B2存活，使用B2的路径
+                            } else {
+                                qDebug() << "[Strategy3] B3无法确定路径源，无法跟随";
+                                QPointF velocity(0, 0);
+                                sendControlCommand(uid, velocity);
+                                continue;
+                            }
+                            
+                            // 确保路径存在
+                            if (gridMap->m_smoothedPathMap.contains(pathSource) && gridMap->m_smoothedPathMap[pathSource].size() > 1) {
+                                QPointF currentPos(it.value().x, it.value().y);
+                                
+                                // 找到路径源在路径上的位置索引
+                                int sourceIndex = gridMap->findClosestPathPointIndex(
+                                    QPointF(dronesInfo[pathSource].x, dronesInfo[pathSource].y), 
+                                    pathSource);
+                                
+                                // 确定B3的目标索引
+                                int b3TargetIndex;
+                                if (followTarget == "B2") {
+                                    // 如果跟随B2，则落后B2 80个点
+                                    b3TargetIndex = qMax(0, sourceIndex - 160);
+                                } else {
+                                    // 如果直接跟随B1，则落后80个点
+                                    b3TargetIndex = qMax(0, sourceIndex - 80);
+                                }
+                                
+                                // 获取目标点
+                                QPointF targetPoint = gridMap->m_smoothedPathMap[pathSource][b3TargetIndex];
+                                
+                                // 检查目标点到当前位置的路径是否有障碍物
+                                bool hasObstacle = false;
+                                QPoint currentGridPos(currentPos.x() / gridMap->GRID_SIZE, currentPos.y() / gridMap->GRID_SIZE);
+                                QPoint targetGridPos(targetPoint.x() / gridMap->GRID_SIZE, targetPoint.y() / gridMap->GRID_SIZE);
+                                
+                                // 检查从当前位置到目标点的直线路径上是否有障碍物
+                                QList<QPoint> pathToCheck = getLinePoints(currentGridPos, targetGridPos);
+                                for (const QPoint& point : pathToCheck) {
+                                    if (isGridPointInObstacle(point)) {
+                                        hasObstacle = true;
+                                        qDebug() << "[Strategy3] B3检测到前方路径有障碍物，需要避障";
+                                        break;
+                                    }
+                                }
+                                
+                                if (hasObstacle) {
+                                    // 如果检测到障碍物，寻找安全点并规划避障路径
+                                    QPoint safePoint = findSafePointNearTarget(currentGridPos, targetGridPos);
+                                    
+                                    // 如果找到了安全点且与当前位置不同，规划路径到安全点
+                                    if (safePoint != currentGridPos) {
+                                        // 清除旧路径
+                                        gridMap->clearPath(uid);
+                                        
+                                        // 规划新路径到安全点
+                                        emit StartfindPath(currentGridPos, safePoint, uid);
+                                        qDebug() << "[Strategy3] B3规划避障路径到安全点:" << safePoint;
+                                        
+                                        // 添加一个连接，当路径规划完成后立即执行移动
+                                        QMetaObject::Connection* conn = new QMetaObject::Connection();
+                                        *conn = connect(pathPlanner, &PathPlanner::pathPlanned, this, [this, uid, conn](const QVector<QPoint>& path, const QString& droneId) {
+                                            // 确保这是我们正在等待的无人机的路径
+                                            if (droneId == uid) {
+                                                // 断开连接，避免重复处理
+                                                disconnect(*conn);
+                                                delete conn;
+                                                
+                                                // 检查路径是否有效
+                                                if (!path.isEmpty() && gridMap->m_smoothedPathMap.contains(droneId) && gridMap->m_smoothedPathMap[droneId].size() > 1) {
+                                                    // 获取无人机当前位置
+                                                    QPointF currentPos(dronesInfo[droneId].x, dronesInfo[droneId].y);
+                                                    
+                                                    // 使用GridMap计算速度
+                                                    QPointF velocity = gridMap->calculateVelocity(droneId, currentPos);
+                                                    
+                                                    qDebug() << "[Strategy3] B3避障后计算速度:" << velocity;
+                                                    
+                                                    // 发送控制命令
+                                                    sendControlCommand(droneId, velocity);
+                                                } else {
+                                                    qDebug() << "[Strategy3] B3避障路径规划失败或路径无效，保持静止";
+                                                    QPointF velocity(0, 0);
+                                                    sendControlCommand(droneId, velocity);
+                                                }
+                                            }
+                                        });
+                                        
+                                        // 跳过后续处理，等待新路径规划完成
+                                        continue;
+                                    }
+                                }
+                                
+                                // 如果没有障碍物或无法找到安全点，继续正常跟随逻辑
+                                // 计算方向向量
+                                QPointF dirVector = targetPoint - currentPos;
+                                float distance = qSqrt(dirVector.x() * dirVector.x() + dirVector.y() * dirVector.y());
+                                
+                                // 初始化速度向量
+                                QPointF velocity;
+                                
+                                // 如果已经非常接近目标点，则匹配跟随目标的速度以保持队形
                                 if (distance < 5.0) {
                                     velocity = QPointF(dronesInfo[followTarget].vx, dronesInfo[followTarget].vy);
                                 } else {
@@ -741,14 +916,28 @@ void MainWindow::onGameDataUpdated(const QMap<QString, DroneInfo> &updatedDrones
                                     }
                                 }
                                 
-                                qDebug() << "[FollowCalc] " << uid << " 跟随" << snakeHead 
-                                        << "路径点，索引:" << b3TargetIndex 
-                                        << "目标点:" << targetPoint << "速度:" << velocity;
+                                qDebug() << "[FollowCalc] " << uid << " 跟随" << followTarget << "，路径来源:" << pathSource
+                                        << "，索引:" << b3TargetIndex << "，目标点:" << targetPoint << "，速度:" << velocity;
                                 
                                 // 发送控制命令
                                 sendControlCommand(uid, velocity);
                                 continue; // 跳过后续处理
+                            } else {
+                                qDebug() << "[Strategy3] B3无法找到" << pathSource << "的路径，无法跟随";
+                                // 如果找不到路径，尝试原地悬停
+                                QPointF velocity(0, 0);
+                                sendControlCommand(uid, velocity);
+                                continue;
                             }
+                        } else if (uid == snakeHead) {
+                            // B3已成为蛇头，由前面的snakeHead逻辑处理
+                            qDebug() << "[Strategy3] B3已成为蛇头，使用蛇头逻辑";
+                        } else {
+                            // 没有可跟随的目标，尝试原地悬停
+                            qDebug() << "[Strategy3] B3没有可跟随的目标，原地悬停";
+                            QPointF velocity(0, 0);
+                            sendControlCommand(uid, velocity);
+                            continue;
                         }
                     }
                 }
@@ -2032,4 +2221,215 @@ bool MainWindow::isPathInObstacle(const QString &droneId, const QList<QPoint> &p
     }
     
     return false;
+}
+
+// 为策略3的跟随者无人机处理障碍物避障
+void MainWindow::handleFollowerObstacleAvoidance(const QString& followerId, const QString& snakeHead) {
+    // 检查参数有效性
+    if (followerId.isEmpty() || snakeHead.isEmpty() || !dronesInfo.contains(followerId) || !dronesInfo.contains(snakeHead)) {
+        qDebug() << "[Strategy3] 避障参数无效，无法为跟随者" << followerId << "规划避障路径";
+        return;
+    }
+
+    // 获取跟随者当前位置
+    QPointF followerPos(dronesInfo[followerId].x, dronesInfo[followerId].y);
+    
+    // 获取跟随者当前栅格坐标
+    int followerGridCol = followerPos.x() / gridMap->GRID_SIZE;
+    int followerGridRow = followerPos.y() / gridMap->GRID_SIZE;
+    QPoint followerGridPoint(followerGridCol, followerGridRow);
+    
+    // 确定路径源 - 应该使用当前蛇头的路径
+    QString pathSource = snakeHead;
+    
+    // 检查蛇头是否有有效路径
+    if (!gridMap->m_smoothedPathMap.contains(pathSource) || gridMap->m_smoothedPathMap[pathSource].size() <= 1) {
+        qDebug() << "[Strategy3] 蛇头" << snakeHead << "没有有效路径，无法为跟随者" << followerId << "规划避障路径";
+        return;
+    }
+    
+    // 找到蛇头当前在路径上的位置索引
+    int headIndex = gridMap->findClosestPathPointIndex(
+        QPointF(dronesInfo[pathSource].x, dronesInfo[pathSource].y), 
+        pathSource);
+    
+    // 确定跟随者应该跟随的目标点索引
+    int targetIndex;
+    if (followerId == "B2") {
+        targetIndex = qMax(0, headIndex - 80);
+    } else if (followerId == "B3") {
+        // 如果B2存活且不是蛇头，则B3跟随B2（落后160个点）
+        if (dronesInfo.contains("B2") && dronesInfo["B2"].hp > 0 && snakeHead != "B2") {
+            targetIndex = qMax(0, headIndex - 160);
+        } else {
+            // 否则B3直接跟随蛇头，落后80个点
+            targetIndex = qMax(0, headIndex - 80);
+        }
+    } else {
+        // 未知的跟随者ID
+        qDebug() << "[Strategy3] 未知的跟随者ID" << followerId;
+        return;
+    }
+    
+    // 获取目标点（像素坐标）
+    QPointF targetPixelPoint = gridMap->m_smoothedPathMap[pathSource][targetIndex];
+    
+    // 转换为栅格坐标
+    QPoint targetGridPoint(
+        targetPixelPoint.x() / gridMap->GRID_SIZE,
+        targetPixelPoint.y() / gridMap->GRID_SIZE
+    );
+    
+    // 检查是否需要避障
+    // 1. 首先尝试找到一个安全的路径点
+    QPoint safePoint = findSafePointNearTarget(followerGridPoint, targetGridPoint);
+    
+    qDebug() << "[Strategy3] 跟随者" << followerId << "避障：从" << followerGridPoint 
+             << "到" << targetGridPoint << "，安全点：" << safePoint << "，路径源:" << pathSource;
+    
+    // 清除旧路径
+    gridMap->clearPath(followerId);
+    
+    // 规划新路径到安全点
+    emit StartfindPath(followerGridPoint, safePoint, followerId);
+    
+    // 添加一个连接，当路径规划完成后立即执行移动
+    QMetaObject::Connection* conn = new QMetaObject::Connection();
+    *conn = connect(pathPlanner, &PathPlanner::pathPlanned, this, [this, followerId, conn](const QVector<QPoint>& path, const QString& droneId) {
+        // 确保这是我们正在等待的无人机的路径
+        if (droneId == followerId) {
+            // 断开连接，避免重复处理
+            disconnect(*conn);
+            delete conn;
+            
+            // 检查路径是否有效
+            if (!path.isEmpty() && gridMap->m_smoothedPathMap.contains(droneId) && gridMap->m_smoothedPathMap[droneId].size() > 1) {
+                // 获取无人机当前位置
+                QPointF currentPos(dronesInfo[droneId].x, dronesInfo[droneId].y);
+                
+                // 使用GridMap计算速度
+                QPointF velocity = gridMap->calculateVelocity(droneId, currentPos);
+                
+                qDebug() << "[Strategy3] 避障后计算" << droneId << "的速度:" << velocity;
+                
+                // 发送控制命令
+                sendControlCommand(droneId, velocity);
+            } else {
+                qDebug() << "[Strategy3] 避障路径规划失败或路径无效，" << droneId << "保持静止";
+                QPointF velocity(0, 0);
+                sendControlCommand(droneId, velocity);
+            }
+        }
+    });
+}
+
+// 在目标点附近寻找安全点（无障碍物）
+QPoint MainWindow::findSafePointNearTarget(const QPoint& start, const QPoint& target) {
+    // 首先检查目标点本身是否安全
+    if (!isGridPointInObstacle(target)) {
+        return target; // 目标点安全，直接返回
+    }
+    
+    // 如果目标点不安全，在其周围寻找安全点
+    // 定义搜索半径和方向
+    const int MAX_RADIUS = 5; // 最大搜索半径
+    const int DIRECTIONS = 8; // 8个方向
+    const int dx[8] = {1, 1, 0, -1, -1, -1, 0, 1};
+    const int dy[8] = {0, 1, 1, 1, 0, -1, -1, -1};
+    
+    // 按照距离从近到远搜索
+    for (int radius = 1; radius <= MAX_RADIUS; radius++) {
+        // 对于每个半径，检查所有方向
+        for (int dir = 0; dir < DIRECTIONS; dir++) {
+            // 计算候选点
+            QPoint candidate(
+                target.x() + dx[dir] * radius,
+                target.y() + dy[dir] * radius
+            );
+            
+            // 确保候选点在地图范围内
+            if (candidate.x() < 0 || candidate.x() >= gridMap->GRID_COLS ||
+                candidate.y() < 0 || candidate.y() >= gridMap->GRID_ROWS) {
+                continue; // 超出地图范围，跳过
+            }
+            
+            // 检查候选点是否安全
+            if (!isGridPointInObstacle(candidate)) {
+                return candidate; // 找到安全点，返回
+            }
+        }
+    }
+    
+    // 如果在目标点周围没有找到安全点，则返回起点（保持原位）
+    return start;
+}
+
+// 检查栅格点是否在任何障碍物内
+bool MainWindow::isGridPointInObstacle(const QPoint& gridPoint) {
+    // 转换为像素坐标（使用栅格中心点）
+    float pixelX = gridPoint.x() * gridMap->GRID_SIZE + gridMap->GRID_SIZE / 2.0f;
+    float pixelY = gridPoint.y() * gridMap->GRID_SIZE + gridMap->GRID_SIZE / 2.0f;
+    
+    // 检查是否在任何障碍物内
+    for (auto it = obstaclesInfo.begin(); it != obstaclesInfo.end(); ++it) {
+        const ObstacleInfo &obstacle = it.value();
+        if (gridMap->isPointInCircle(pixelX, pixelY, obstacle.x, obstacle.y, obstacle.r)) {
+            return true; // 在障碍物内
+        }
+    }
+    
+    // 检查是否在任何静态障碍物内
+    for (auto it = staticObstacles.begin(); it != staticObstacles.end(); ++it) {
+        const ObstacleInfo &obstacle = it.value();
+        if (gridMap->isPointInCircle(pixelX, pixelY, obstacle.x, obstacle.y, obstacle.r)) {
+            return true; // 在障碍物内
+        }
+    }
+    
+    // 检查是否在任何移动障碍物内
+    for (auto it = movingObstacles.begin(); it != movingObstacles.end(); ++it) {
+        const ObstacleInfo &obstacle = it.value();
+        if (gridMap->isPointInCircle(pixelX, pixelY, obstacle.x, obstacle.y, obstacle.r)) {
+            return true; // 在障碍物内
+        }
+    }
+    
+    return false; // 不在任何障碍物内
+}
+
+// 获取两点之间的直线上的所有栅格点
+QList<QPoint> MainWindow::getLinePoints(const QPoint& start, const QPoint& end) {
+    QList<QPoint> points;
+    
+    // 使用Bresenham算法获取两点之间的直线上的所有点
+    int x1 = start.x();
+    int y1 = start.y();
+    int x2 = end.x();
+    int y2 = end.y();
+    
+    int dx = abs(x2 - x1);
+    int dy = abs(y2 - y1);
+    int sx = (x1 < x2) ? 1 : -1;
+    int sy = (y1 < y2) ? 1 : -1;
+    int err = dx - dy;
+    
+    while (true) {
+        points.append(QPoint(x1, y1));
+        
+        if (x1 == x2 && y1 == y2) {
+            break;
+        }
+        
+        int e2 = 2 * err;
+        if (e2 > -dy) {
+            err -= dy;
+            x1 += sx;
+        }
+        if (e2 < dx) {
+            err += dx;
+            y1 += sy;
+        }
+    }
+    
+    return points;
 }

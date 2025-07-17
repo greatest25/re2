@@ -202,6 +202,12 @@ private:
     void handleEnemyMemoryTimeout();
     bool isPathInObstacle(const QString &droneId, const QList<QPoint> &path);
     void planPathForSingleDrone_S3(const QString& droneId, const QPoint& currentPoint, const QPoint& targetPoint);
+    
+    // 新增：为策略3的跟随者无人机处理障碍物避障
+    void handleFollowerObstacleAvoidance(const QString& followerId, const QString& snakeHead);
+    QPoint findSafePointNearTarget(const QPoint& start, const QPoint& target);
+    bool isGridPointInObstacle(const QPoint& gridPoint);
+    QList<QPoint> getLinePoints(const QPoint& start, const QPoint& end);
 };
 #endif // MAINWINDOW_H
 
